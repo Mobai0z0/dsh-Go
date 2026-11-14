@@ -412,6 +412,18 @@ jobs:
               ls -1 "$root"
               exit 1; }
           done
+          # @kit.ShareKit and @kit.CoreSpeechKit exist only in the HarmonyOS SDK.
+          # The --hms-stubs mode of check-arkts also replaces the loader's
+          # kit_configs, which SyscapTransform needs; copying just the two
+          # declaration trees leaves that alone.
+          stubs="$GITHUB_WORKSPACE/tooling/ohos/hms-stubs"
+          if [ -d "$stubs/api" ] && [ -d "$root/ets/api" ]; then
+            cp -n "$stubs"/api/* "$root/ets/api/" 2>/dev/null || true
+            cp -n "$stubs"/kits/* "$root/ets/kits/" 2>/dev/null || true
+            echo "HMS declarations copied into the SDK: $(ls "$stubs"/kits | wc -l) kits"
+          else
+            echo "::warning::no HMS stub declarations found at $stubs"
+          fi
           # hvigor runs tools from toolchains and native/llvm/bin. They are bash
           # scripts behind a `#!/bin/sh` shebang, which is bash on the machines
           # this was written on and dash on Ubuntu; dash dies on line 3.
@@ -480,11 +492,7 @@ jobs:
           JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           export JAVA_HOME
           log="$RUNNER_TEMP/hap.log"
-          # --hms-stubs: the public OpenHarmony SDK has no @kit.ShareKit or
-          # @kit.CoreSpeechKit, so the HMS-facing ArkTS would not compile at all.
-          # The script supplies minimal unofficial declarations for those; the
-          # HAP still cannot use real HMS features, but it builds.
-          if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --hms-stubs --work "$PWD/work" \
+          if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --work "$PWD/work" \
               --aot "$PWD/aot" \
               --native "$NATIVE_DIR" \
               --runtime "$PWD/natives/dsh-runtime.zip" \
@@ -519,6 +527,29 @@ jobs:
             exit 1
           fi
           tail -n 20 "$log"
+
+      # Actions logs need a token to read; a branch does not. On failure the
+      # hvigor output is pushed there so the next fix is based on the real error.
+      - name: Publish the failure log
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p ci-logs
+          hg="$(find "$PWD/work" -name hvigor.log -print -quit 2>/dev/null || true)"
+          [ -n "$hg" ] && cp "$hg" ci-logs/hvigor.log || true
+          dt="$(find "$PWD/work" -name diagnostics.txt -print -quit 2>/dev/null || true)"
+          [ -n "$dt" ] && cp "$dt" ci-logs/diagnostics.txt || true
+          cp "$RUNNER_TEMP/hap.log" ci-logs/hap.log 2>/dev/null || true
+          ls -lh ci-logs
+          cd ci-logs
+          git init -q
+          git config user.email "ci@example.invalid"
+          git config user.name "ci"
+          git add -A
+          git commit -qm "hvigor log from run ${{ github.run_id }}"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/ci-logs
 
       - name: Keep the HAP
         if: steps.toolchain.outputs.found == 'true'
