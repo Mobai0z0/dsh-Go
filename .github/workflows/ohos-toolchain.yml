@@ -12,6 +12,11 @@
 name: OHOS toolchain · libnode
 
 on:
+  # Pushing a change to this file starts a run, so fixing the build does not
+  # need another manual click. Nothing else triggers it: a release never does.
+  push:
+    paths:
+      - '.github/workflows/ohos-toolchain.yml'
   workflow_dispatch:
     inputs:
       node_version:
