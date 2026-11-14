@@ -436,6 +436,18 @@ jobs:
             fi
           done < <(find "$root" -type f -size -2M 2>/dev/null)
           echo "shebang -> bash: $fixed files in the SDK"
+          # Name the tools hvigor actually invokes; the generic sweep above can
+          # miss them when check-arkts rebuilds the SDK tree from somewhere else.
+          for cand in "$root/toolchains/syscap_tool" "$root/toolchains/syscap_tool.sh" \
+                      "$root/toolchains/restool" "$root/toolchains/id_generator"; do
+            [ -e "$cand" ] || continue
+            echo "before: $(head -1 "$cand")  ($cand)"
+            if head -1 "$cand" | grep -q '^#!'; then
+              sed -i '1s|^#!.*|#!/bin/bash|' "$cand"
+              echo "after : $(head -1 "$cand")"
+            fi
+          done
+          echo "toolchains entries: $(ls "$root/toolchains" 2>/dev/null | tr '\n' ' ')"
           # A linking tool that cannot run here would surface an hour later
           # inside hvigor; use the host's lld instead.
           lld="$root/native/llvm/bin/ld.lld"
