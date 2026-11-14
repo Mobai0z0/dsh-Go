@@ -1,0 +1,188 @@
+# Builds the HarmonyOS native library the app runs Node in (libnode.so).
+#
+# Why this is a separate, manually started workflow: it is not part of a
+# release. It runs when the pinned Node or LLVM version changes, produces
+# `hap-libs.zip` for the `ohos-toolchain` release, and then stays out of the
+# way. runtime/ohos/node/BUILD.md has the same commands with the reasoning;
+# upstream runs them on a workstation, not in CI, so the first run here may
+# need adjustment.
+#
+# Stage 1 of 3 (see docs/ohos-release.md): LLVM 23.1.1 runtime libraries, then
+# the cross-compiled Node 24.22.1 shared library. Expect one to three hours.
+name: OHOS toolchain · libnode
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: 'Node version to cross-compile (must match runtime/ohos/node pins)'
+        required: false
+        default: '24.22.1'
+      jobs:
+        description: 'Parallel make jobs; BUILD.md says -j6 ran a 14 GB host out of memory'
+        required: false
+        default: '4'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ohos-libnode
+  cancel-in-progress: false
+
+env:
+  LLVM_VERSION: 23.1.1
+  # apt.llvm.org takes the major version only.
+  LLVM_MAJOR: '23'
+  LLVM_SHA256: ebe9be46fe8756d58c5b198ffad0fa2a766257add81a4dc52179bfacc7888ee6
+  NODE_SHA256: 4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231
+  # Pinned by check-arkts.sh and by the Flutter OHOS toolchain.
+  SDK_SHA256: 130a438cbcddd46a2a5b09ee9925339cddf4cca99223329b860f96a5c72f338f
+  SDK_URL: https://repo.huaweicloud.com/openharmony/os/7.0-Release/ohos-sdk-windows_linux-public.tar.gz
+
+jobs:
+  libnode:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ vars.OHOS_REF || 'claude/harmonyos-ohos' }}
+          persist-credentials: false
+
+      # A Node build tree plus a 3 GB SDK does not fit in the runner's default
+      # free space, so drop the toolchains this job never uses.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h / | tail -1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      # BUILD.md: the target code must be built by host clang 23.1.1 with its
+      # own static libc++; the SDK's clang 15 cannot compile Node 24.
+      - name: Install clang and the build tools
+        run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          sudo bash /tmp/llvm.sh "$LLVM_MAJOR"
+          sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3
+          for name in clang clang++ ld.lld llvm-ar llvm-nm llvm-ranlib llvm-readelf llvm-strip; do
+            candidate="$(command -v "${name}-${LLVM_MAJOR}" || true)"
+            [ -n "$candidate" ] || { echo "::error::$name for LLVM $LLVM_MAJOR is missing"; exit 1; }
+            echo "::notice::$name -> $candidate"
+          done
+          clang --version | head -1
+          cmake --version | head -1
+
+      - name: Fetch the pinned LLVM and Node sources
+        env:
+          NODE_VERSION: ${{ inputs.node_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          curl -fSL --retry 3 --retry-delay 10 -o src/llvm.tar.xz \
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src.tar.xz"
+          echo "$LLVM_SHA256  src/llvm.tar.xz" | sha256sum -c -
+          curl -fSL --retry 3 --retry-delay 10 -o src/node.tar.xz \
+            "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz"
+          echo "$NODE_SHA256  src/node.tar.xz" | sha256sum -c -
+          ls -lh src
+
+      # The SDK is the same archive the release workflow caches, under the same
+      # key, so a repository that already built a HAP pays nothing here.
+      - name: Restore the OpenHarmony SDK
+        id: sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: sdk.tar.gz
+          key: ohos-sdk-${{ env.SDK_SHA256 }}
+
+      - name: Download the OpenHarmony SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 3 --retry-delay 10 -o sdk.tar.gz "$SDK_URL"
+          echo "$SDK_SHA256  sdk.tar.gz" | sha256sum -c -
+
+      - name: Save the OpenHarmony SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: sdk.tar.gz
+          key: ${{ steps.sdk.outputs.cache-primary-key }}
+
+      # Only the native half is needed here; find its manifest rather than
+      # assuming the archive layout.
+      - name: Unpack the SDK native part
+        run: |
+          set -euo pipefail
+          mkdir -p sdkraw sdk
+          tar -xzf sdk.tar.gz -C sdkraw
+          rm -f sdk.tar.gz
+          find sdkraw -maxdepth 4 -type d -name windows -exec rm -rf {} + 2>/dev/null || true
+          zip="$(find sdkraw -maxdepth 4 -type f -name 'native-*.zip' | head -1)"
+          if [ -n "$zip" ]; then unzip -q "$zip" -d sdk; fi
+          pkg="$(find sdkraw sdk -path '*/native/oh-uni-package.json' | head -1)"
+          [ -n "$pkg" ] || { echo "::error::the SDK archive has no native/oh-uni-package.json"; exit 1; }
+          native="$(cd "$(dirname "$pkg")" && pwd)"
+          rm -rf sdkraw
+          echo "SDK_NATIVE=$native" >> "$GITHUB_ENV"
+          python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print('SDK native', d['apiVersion'], d['version'])" "$native/oh-uni-package.json"
+          df -h / | tail -1
+
+      - name: Install the pinned build tools
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix runtime/ohos/node/build-tools
+
+      - name: Build the LLVM runtime libraries
+        run: |
+          set -euo pipefail
+          python3 runtime/ohos/node/build-runtimes.py \
+            --sdk-native "$SDK_NATIVE" \
+            --clang "$(command -v "clang-$LLVM_MAJOR")" \
+            --source-archive "$PWD/src/llvm.tar.xz" \
+            --work "$PWD/work-runtimes" \
+            --output "$PWD/ohos-llvm-runtimes" \
+            --jobs "${{ inputs.jobs }}"
+
+      - name: Cross-compile Node
+        env:
+          NODE_VERSION: ${{ inputs.node_version }}
+        run: |
+          set -euo pipefail
+          python3 runtime/ohos/node/build-node.py \
+            --sdk-native "$SDK_NATIVE" \
+            --clang "$(command -v "clang-$LLVM_MAJOR")" \
+            --cxx-runtime "$PWD/ohos-llvm-runtimes" \
+            --source-archive "$PWD/src/node.tar.xz" \
+            --host-node "$(command -v node)" \
+            --work "$PWD/work-node" \
+            --output "$PWD/ohos-node-artifacts" \
+            --jobs "${{ inputs.jobs }}"
+          file ohos-node-artifacts/libnode.so
+          ls -lh ohos-node-artifacts
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            echo "### libnode"
+            echo
+            echo "| item | value |"
+            echo "|---|---|"
+            echo "| Node | ${{ inputs.node_version }} |"
+            echo "| LLVM | $LLVM_VERSION |"
+            echo "| jobs | ${{ inputs.jobs }} |"
+            ls -l ohos-node-artifacts 2>/dev/null | tail -5
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the library
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ohos-libnode
+          path: ohos-node-artifacts
+          if-no-files-found: error
+          retention-days: 30
