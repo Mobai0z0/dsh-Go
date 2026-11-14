@@ -186,3 +186,140 @@ jobs:
           path: ohos-node-artifacts
           if-no-files-found: error
           retention-days: 30
+
+      # The static libc++ set built above is an input to every addon in the HAP,
+      # so it travels with the library rather than being rebuilt per stage.
+      - name: Keep the runtime libraries
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ohos-llvm-runtimes
+          path: ohos-llvm-runtimes
+          if-no-files-found: error
+          retention-days: 30
+
+  # Stage 2: the two Node addons and the host bridge, packaged as the
+  # arm64-v8a directory a HAP needs. build-hap-libs.py drives the addon builds
+  # itself; this job only supplies their pinned sources.
+  hap-libs:
+    needs: libnode
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ vars.OHOS_REF || 'claude/harmonyos-ohos' }}
+          persist-credentials: false
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h / | tail -1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install clang and the build tools
+        run: |
+          set -euo pipefail
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          sudo bash /tmp/llvm.sh "$LLVM_MAJOR"
+          sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3
+          command -v "clang-$LLVM_MAJOR"
+
+      - name: Download the library and the runtime libraries
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: ohos-*
+          path: built
+
+      - name: Fetch the OpenHarmony SDK
+        id: sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: sdk.tar.gz
+          key: ohos-sdk-${{ env.SDK_SHA256 }}
+
+      - name: Download the OpenHarmony SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 3 --retry-delay 10 -o sdk.tar.gz "$SDK_URL"
+          echo "$SDK_SHA256  sdk.tar.gz" | sha256sum -c -
+
+      - name: Save the OpenHarmony SDK
+        if: steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: sdk.tar.gz
+          key: ${{ steps.sdk.outputs.cache-primary-key }}
+
+      - name: Unpack the SDK native part
+        run: |
+          set -euo pipefail
+          mkdir -p sdkraw sdk
+          tar -xzf sdk.tar.gz -C sdkraw
+          rm -f sdk.tar.gz
+          find sdkraw -maxdepth 4 -type d -name windows -exec rm -rf {} + 2>/dev/null || true
+          zip="$(find sdkraw -maxdepth 4 -type f -name 'native-*.zip' | head -1)"
+          if [ -n "$zip" ]; then unzip -q "$zip" -d sdk; fi
+          pkg="$(find sdkraw sdk -path '*/native/oh-uni-package.json' | head -1)"
+          [ -n "$pkg" ] || { echo "::error::the SDK archive has no native/oh-uni-package.json"; exit 1; }
+          native="$(cd "$(dirname "$pkg")" && pwd)"
+          rm -rf sdkraw
+          echo "SDK_NATIVE=$native" >> "$GITHUB_ENV"
+
+      # The addon sources are pinned in the repository, so both the URL and the
+      # digest are read from there instead of being copied into this file.
+      - name: Fetch the pinned addon sources
+        env:
+          NODE_VERSION: ${{ inputs.node_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p sources
+          url="$(python3 -c "import json;print(json.load(open('runtime/ohos/native/loader/source-pins.json'))['upstream']['archiveURL'])")"
+          sha="$(python3 -c "import json;print(json.load(open('runtime/ohos/native/loader/source-pins.json'))['upstream']['archiveSHA256'])")"
+          curl -fSL --retry 3 --retry-delay 10 -o sources/loader.tar.gz "$url"
+          echo "$sha  sources/loader.tar.gz" | sha256sum -c -
+          mkdir -p sources/loader
+          tar -xzf sources/loader.tar.gz -C sources/loader --strip-components=1
+          curl -fSL --retry 3 --retry-delay 10 -o sources/node.tar.xz \
+            "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz"
+          echo "$NODE_SHA256  sources/node.tar.xz" | sha256sum -c -
+          mkdir -p sources/node
+          tar -xJf sources/node.tar.xz -C sources/node --strip-components=1
+          # The two npm packages are pinned by version; their trees are what the
+          # addon builds compile against.
+          mkdir -p sources/npm && cd sources/npm
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund --ignore-scripts \
+            '@deepseek-ai/node-addon-system@0.1.2' 'node-addon-api@8.9.2'
+          cd ../..
+          ls -1 sources/npm/node_modules
+
+      - name: Build the native libraries
+        run: |
+          set -euo pipefail
+          python3 runtime/ohos/native/build-hap-libs.py \
+            --sdk-native "$SDK_NATIVE" \
+            --clang "$(command -v "clang-$LLVM_MAJOR")" \
+            --cxx-runtime "$PWD/built/ohos-llvm-runtimes" \
+            --libnode-output "$PWD/built/ohos-libnode" \
+            --node-source "$PWD/sources/node" \
+            --flock-package "$PWD/sources/npm/node_modules/@deepseek-ai/node-addon-system" \
+            --loader-source "$PWD/sources/loader" \
+            --node-addon-api "$PWD/sources/npm/node_modules/node-addon-api" \
+            --work "$PWD/work-libs" \
+            --output "$PWD/hap-libs/arm64-v8a"
+          ls -lh hap-libs/arm64-v8a
+          file hap-libs/arm64-v8a/*.so | head -10
+
+      - name: Keep the HAP libraries
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ohos-hap-libs
+          path: hap-libs
+          if-no-files-found: error
+          retention-days: 30
