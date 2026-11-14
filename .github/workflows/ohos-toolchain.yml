@@ -178,6 +178,9 @@ jobs:
         if: steps.runtimes.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
+          # A cache miss may still leave an empty directory behind, and the
+          # script refuses an --output that already exists.
+          rm -rf ohos-llvm-runtimes
           log="$RUNNER_TEMP/runtimes.log"
           if ! python3 runtime/ohos/node/build-runtimes.py \
               --sdk-native "$SDK_NATIVE" \
@@ -186,9 +189,18 @@ jobs:
               --work "$PWD/work-runtimes" \
               --output "$PWD/ohos-llvm-runtimes" \
               --jobs "${{ inputs.jobs }}" >"$log" 2>&1; then
-            tail -n 60 "$log"
-            detail="$(grep -iE "error|missing|must be|failed|no such|refus" "$log" | tail -6 | tr '\n' ';')"
-            echo "::error::build-runtimes failed: ${detail:0:900}"
+            tail -n 40 "$log"
+            # cmake writes the compiler-probe failures here; that is where the
+            # real reason is when configure aborts.
+            probe=""
+            for f in work-runtimes/build/CMakeFiles/CMakeConfigureLog.yaml work-runtimes/build/CMakeFiles/CMakeError.log; do
+              [ -f "$f" ] || continue
+              echo "=== $f (tail) ==="
+              tail -n 20 "$f"
+              probe="$probe$(grep -iE "error|failed|cannot|No such|unable" "$f" | tail -4 | cut -c1-120 | tr '\n' ';')"
+            done
+            end="$(tail -n 6 "$log" | cut -c1-140 | tr '\n' ';')"
+            echo "::error::build-runtimes failed: ${probe:0:420} | end: ${end:0:420} | disk $(df -h / | awk 'NR==2{print $4}')"
             exit 1
           fi
           tail -n 10 "$log"
