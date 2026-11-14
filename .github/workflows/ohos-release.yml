@@ -412,6 +412,30 @@ jobs:
               ls -1 "$root"
               exit 1; }
           done
+          # hvigor runs tools from toolchains and native/llvm/bin. They are bash
+          # scripts behind a `#!/bin/sh` shebang, which is bash on the machines
+          # this was written on and dash on Ubuntu; dash dies on line 3.
+          fixed=0
+          while IFS= read -r f; do
+            [ -f "$f" ] && [ ! -L "$f" ] || continue
+            if head -c 64 "$f" 2>/dev/null | head -1 | grep -q '^#! */bin/sh'; then
+              sed -i '1s|^#! */bin/sh|#!/bin/bash|' "$f"
+              fixed=$((fixed + 1))
+            fi
+          done < <(find "$root" -type f -size -2M 2>/dev/null)
+          echo "shebang -> bash: $fixed files in the SDK"
+          # A linking tool that cannot run here would surface an hour later
+          # inside hvigor; use the host's lld instead.
+          lld="$root/native/llvm/bin/ld.lld"
+          if [ -f "$lld" ] && ! "$lld" --version >/dev/null 2>&1; then
+            host_lld="$(command -v ld.lld || command -v ld.lld-23 || true)"
+            if [ -n "$host_lld" ]; then
+              echo "::warning::the SDK's ld.lld cannot run here; using $host_lld"
+              ln -sf "$host_lld" "$lld"
+            else
+              echo "::warning::the SDK's ld.lld cannot run and no host lld exists"
+            fi
+          fi
           # The unpacked parts ARE the SDK when the archive nests them in zips,
           # so only the outer tree can go.
           rm -rf sdkraw
