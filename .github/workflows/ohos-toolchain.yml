@@ -1,0 +1,192 @@
+# Builds the engine runtime that goes into a HAP rawfile: `dsh-runtime.zip`.
+#
+# The native libraries are NOT built here. They are uploaded once as the
+# `ohos-toolchain` release's `hap-libs.zip`, because producing them means
+# cross-compiling Node and a self-built clang -- see docs/ohos-release.md.
+#
+# What is left is pure Node work: install the two pinned npm prefixes, patch
+# DSH for the ohos target, build the private re2js bundle, then compose the
+# rawfile payload. No compiler is involved, so a run is minutes, not hours.
+#
+# Pushing a change to this file starts a run, which is how the build gets
+# iterated without anyone clicking a button.
+name: OHOS toolchain · runtime
+
+on:
+  push:
+    paths:
+      - '.github/workflows/ohos-toolchain.yml'
+  workflow_dispatch:
+    inputs:
+      node_version:
+        description: 'Node version to install (must match composition.json)'
+        required: false
+        default: '24.22.1'
+
+permissions:
+  # Writing the result into the ohos-toolchain release is the point of the run.
+  contents: write
+
+concurrency:
+  group: ohos-toolchain-runtime
+  cancel-in-progress: true
+
+env:
+  # `inputs` is empty for a push, so every use goes through this default.
+  NODE_VERSION: ${{ inputs.node_version || '24.22.1' }}
+  # Pinned by runtime/ohos/package/composition.json; prepare-inputs refuses
+  # to run when npm reports anything else.
+  NPM_VERSION: 11.9.0
+
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ vars.OHOS_REF || 'claude/harmonyos-ohos' }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Pin npm to the version the composition recipe expects
+        run: |
+          set -euo pipefail
+          npm install -g "npm@$NPM_VERSION"
+          echo "node $(node --version), npm $(npm --version)"
+          test "$(npm --version)" = "$NPM_VERSION" || { echo "::error::npm is $(npm --version), the recipe pins $NPM_VERSION"; exit 1; }
+
+      # esbuild 0.27.3 is what the private re2js bundle is built with and what
+      # audit-imports.mjs resolves through.
+      - name: Install the pinned build tools
+        run: npm ci --ignore-scripts --no-audit --no-fund --prefix runtime/ohos/node/build-tools
+
+      # Installs both npm prefixes, patches DSH for ohos and writes
+      # prepared-inputs.json plus target-report.json.
+      - name: Prepare the composition inputs
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/prepared"
+          rm -rf "$out"
+          mkdir -p "$RUNNER_TEMP/npm-cache"
+          log="$RUNNER_TEMP/prepare.log"
+          if ! python3 runtime/ohos/package/prepare-inputs.py --target ohos \
+              --node "$(command -v node)" \
+              --npm "$(command -v npm)" \
+              --cache "$RUNNER_TEMP/npm-cache" \
+              --out "$out" >"$log" 2>&1; then
+            tail -n 40 "$log"
+            end="$(tail -n 4 "$log" | cut -c1-180 | tr '\n' ';' || true)"
+            echo "::error::prepare-inputs failed: ${end:0:700}"
+            exit 1
+          fi
+          tail -n 5 "$log"
+          echo "PREPARED=$out" >> "$GITHUB_ENV"
+          ls -1 "$out"
+
+      # The private re2js bundle: the script reads re2js 1.3.3 out of the
+      # process prefix and writes build/re2js-unicode.mjs next to itself, so it
+      # runs from a copy placed inside that prefix.
+      - name: Build the private re2js bundle
+        run: |
+          set -euo pipefail
+          cp runtime/ohos/process/build-rg-regex.mjs "$PREPARED/process/"
+          cp -r runtime/ohos/process/regex-src "$PREPARED/process/"
+          cd "$PREPARED/process"
+          log="$RUNNER_TEMP/regex.log"
+          if ! node build-rg-regex.mjs "$GITHUB_WORKSPACE/runtime/ohos/node/build-tools" >"$log" 2>&1; then
+            tail -n 40 "$log"
+            end="$(tail -n 4 "$log" | cut -c1-180 | tr '\n' ';' || true)"
+            echo "::error::re2js bundle failed: ${end:0:700}"
+            exit 1
+          fi
+          tail -n 3 "$log"
+          want="$(python3 -c "import json;print(json.load(open('$GITHUB_WORKSPACE/runtime/ohos/package/composition.json'))['regexSha256'])")"
+          got="$(sha256sum build/re2js-unicode.mjs | cut -d' ' -f1)"
+          echo "regex sha256: $got"
+          if [ "$got" != "$want" ]; then
+            echo "::error::the re2js bundle is $got but composition.json pins $want"
+            exit 1
+          fi
+          echo "REGEX=$PREPARED/process/build/re2js-unicode.mjs" >> "$GITHUB_ENV"
+
+      - name: Compose the runtime payload
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/compose"
+          rm -rf "$out"
+          log="$RUNNER_TEMP/compose.log"
+          if ! python3 runtime/ohos/package/compose-runtime.py --target ohos \
+              --dsh-prefix "$PREPARED/dsh" \
+              --process-prefix "$PREPARED/process" \
+              --target-report "$PREPARED/target-report.json" \
+              --prepared-inputs "$PREPARED/prepared-inputs.json" \
+              --regex-artifact "$REGEX" \
+              --esbuild-prefix "$GITHUB_WORKSPACE/runtime/ohos/node/build-tools" \
+              --imports-report "$RUNNER_TEMP/imports-report.json" \
+              --node "$(command -v node)" \
+              --runtime-core "$GITHUB_WORKSPACE/app/ohos/entry/src/main/ets/runtime/RuntimeCore.ets" \
+              --out "$out" >"$log" 2>&1; then
+            tail -n 50 "$log"
+            end="$(tail -n 4 "$log" | cut -c1-180 | tr '\n' ';' || true)"
+            echo "::error::compose-runtime failed: ${end:0:700}"
+            exit 1
+          fi
+          tail -n 3 "$log"
+          echo "COMPOSED=$out" >> "$GITHUB_ENV"
+          find "$out" -maxdepth 2 | head -20
+
+      # build-hap.sh wants one Stored dsh-runtime/runtime.zip member. Compose
+      # writes the payload tree; wrap its runtime.zip if it did not already.
+      - name: Package the rawfile transport
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          inner="$(find "$COMPOSED" -name runtime.zip -type f | head -1)"
+          [ -n "$inner" ] || { echo "::error::compose produced no runtime.zip"; find "$COMPOSED" -maxdepth 3; exit 1; }
+          echo "inner runtime.zip: $inner ($(stat -c%s "$inner") bytes)"
+          python3 - "$inner" "$PWD/dist/dsh-runtime.zip" <<'PY'
+          import sys, zipfile, hashlib
+          from pathlib import Path
+          inner, dest = Path(sys.argv[1]), Path(sys.argv[2])
+          name = 'dsh-runtime/runtime.zip'
+          with zipfile.ZipFile(dest, 'w', compression=zipfile.ZIP_STORED, allowZip64=False) as bundle:
+              bundle.write(inner, name)
+          with zipfile.ZipFile(dest) as bundle:
+              members = bundle.infolist()
+              assert not bundle.comment and len(members) == 1, members
+              assert members[0].filename == name, members[0].filename
+              assert members[0].compress_type == zipfile.ZIP_STORED
+          print('transport:', dest.stat().st_size, 'bytes,',
+                hashlib.sha256(dest.read_bytes()).hexdigest()[:16])
+          PY
+          ls -lh dist
+
+      - name: Keep the runtime transport
+        if: success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ohos-dsh-runtime
+          path: dist/dsh-runtime.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      # The release is where the release workflow looks for both inputs. The
+      # native libraries are uploaded by hand once; this half lands here.
+      - name: Attach it to the ohos-toolchain release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh release view ohos-toolchain --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create ohos-toolchain --repo "$GITHUB_REPOSITORY" \
+              --title "OHOS toolchain" \
+              --notes "CI 打 HAP 用的输入，不是应用版本。hap-libs.zip 是原生库，dsh-runtime.zip 由 OHOS toolchain · runtime 产出。"
+          fi
+          gh release upload ohos-toolchain dist/dsh-runtime.zip --clobber --repo "$GITHUB_REPOSITORY"
+          echo "assets now:"
+          gh release view ohos-toolchain --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[] | "\(.name) \(.size) bytes"'
