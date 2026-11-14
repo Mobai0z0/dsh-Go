@@ -165,7 +165,17 @@ jobs:
       - name: Install the pinned build tools
         run: npm ci --ignore-scripts --no-audit --no-fund --prefix runtime/ohos/node/build-tools
 
+      # Rebuilding these costs half an hour and they only change with the
+      # compiler, so a failed Node build resumes from here instead of the top.
+      - name: Restore the LLVM runtime libraries
+        id: runtimes
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ohos-llvm-runtimes
+          key: ohos-runtimes-${{ env.LLVM_SHA256 }}-clang${{ env.LLVM_MAJOR }}
+
       - name: Build the LLVM runtime libraries
+        if: steps.runtimes.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/runtimes.log"
@@ -186,6 +196,13 @@ jobs:
           # are several GB the Node build tree wants back.
           rm -rf work-runtimes src/llvm.tar.xz
           df -h / | tail -1
+
+      - name: Save the LLVM runtime libraries
+        if: steps.runtimes.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ohos-llvm-runtimes
+          key: ${{ steps.runtimes.outputs.cache-primary-key }}
 
       - name: Cross-compile Node
         env:
