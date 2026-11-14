@@ -179,6 +179,17 @@ jobs:
           native="$(cd "$(dirname "$pkg")" && pwd)"
           rm -rf sdkraw
           echo "SDK_NATIVE=$native" >> "$GITHUB_ENV"
+          # Node links with the SDK's own ld.lld. If that file cannot run on
+          # this host -- wrong machine type, or a truncated archive member --
+          # link with the host's lld instead of failing an hour into the build.
+          echo "host: $(uname -m), sdk ld.lld: $(file -b "$native/llvm/bin/ld.lld" 2>/dev/null || echo missing)"
+          if ! "$native/llvm/bin/ld.lld" --version >/dev/null 2>&1; then
+            host_lld="$(command -v "ld.lld-$LLVM_MAJOR" || command -v ld.lld || true)"
+            [ -n "$host_lld" ] || { echo "::error::neither the SDK's ld.lld nor a host ld.lld can run"; exit 1; }
+            echo "::warning::the SDK's ld.lld does not run here; linking with $host_lld"
+            ln -sf "$host_lld" "$native/llvm/bin/ld.lld"
+            "$native/llvm/bin/ld.lld" --version
+          fi
           python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print('SDK native', d['apiVersion'], d['version'])" "$native/oh-uni-package.json"
           df -h / | tail -1
 
@@ -397,6 +408,17 @@ jobs:
           native="$(cd "$(dirname "$pkg")" && pwd)"
           rm -rf sdkraw
           echo "SDK_NATIVE=$native" >> "$GITHUB_ENV"
+          # Node links with the SDK's own ld.lld. If that file cannot run on
+          # this host -- wrong machine type, or a truncated archive member --
+          # link with the host's lld instead of failing an hour into the build.
+          echo "host: $(uname -m), sdk ld.lld: $(file -b "$native/llvm/bin/ld.lld" 2>/dev/null || echo missing)"
+          if ! "$native/llvm/bin/ld.lld" --version >/dev/null 2>&1; then
+            host_lld="$(command -v "ld.lld-$LLVM_MAJOR" || command -v ld.lld || true)"
+            [ -n "$host_lld" ] || { echo "::error::neither the SDK's ld.lld nor a host ld.lld can run"; exit 1; }
+            echo "::warning::the SDK's ld.lld does not run here; linking with $host_lld"
+            ln -sf "$host_lld" "$native/llvm/bin/ld.lld"
+            "$native/llvm/bin/ld.lld" --version
+          fi
 
       # The addon sources are pinned in the repository, so both the URL and the
       # digest are read from there instead of being copied into this file.
