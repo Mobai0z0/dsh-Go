@@ -217,9 +217,9 @@ jobs:
               [ -f "$f" ] || continue
               echo "=== $f (tail) ==="
               tail -n 20 "$f"
-              probe="$probe$(grep -iE "error|failed|cannot|No such|unable" "$f" | tail -4 | cut -c1-120 | tr '\n' ';')"
+              probe="$probe$(grep -iE "error|failed|cannot|No such|unable" "$f" 2>/dev/null | tail -4 | cut -c1-120 | tr '\n' ';' || true)"
             done
-            end="$(tail -n 6 "$log" | cut -c1-140 | tr '\n' ';')"
+            end="$(tail -n 6 "$log" | cut -c1-140 | tr '\n' ';' || true)"
             echo "::error::build-runtimes failed: ${probe:0:420} | end: ${end:0:420} | disk $(df -h / | awk 'NR==2{print $4}')"
             exit 1
           fi
@@ -254,7 +254,7 @@ jobs:
             for f in $(find work-node -maxdepth 3 \( -name make.log -o -name configure.log \) 2>/dev/null | head -2); do
               echo "=== $f (tail) ==="
               tail -n 30 "$f"
-              make_err="$make_err$(grep -iE 'error:|fatal error|undefined reference|cannot find|No space left|Killed|out of memory' "$f" | tail -3 | tr '\n' ';')"
+              make_err="$make_err$(grep -iE 'error:|fatal error|undefined reference|cannot find|No space left|Killed|out of memory' "$f" 2>/dev/null | tail -3 | tr '\n' ';' || true)"
             done
             echo "::error::build-node failed: ${make_err:0:520} | end: $(tail -n 2 "$log" | tr '\n' ';' | cut -c1-160) | disk $(df -h / | awk 'NR==2{print $4}') | mem $(free -m | awk 'NR==2{print $7}')MB"
             exit 1
