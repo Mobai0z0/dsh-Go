@@ -456,7 +456,11 @@ jobs:
           JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           export JAVA_HOME
           log="$RUNNER_TEMP/hap.log"
-          if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --work "$PWD/work" \
+          # --hms-stubs: the public OpenHarmony SDK has no @kit.ShareKit or
+          # @kit.CoreSpeechKit, so the HMS-facing ArkTS would not compile at all.
+          # The script supplies minimal unofficial declarations for those; the
+          # HAP still cannot use real HMS features, but it builds.
+          if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --hms-stubs --work "$PWD/work" \
               --aot "$PWD/aot" \
               --native "$NATIVE_DIR" \
               --runtime "$PWD/natives/dsh-runtime.zip" \
