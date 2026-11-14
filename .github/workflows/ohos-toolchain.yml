@@ -117,16 +117,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p src
-          curl -fSL --retry 3 --retry-delay 10 -o src/llvm.tar.xz \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src.tar.xz"
-          echo "$LLVM_SHA256  src/llvm.tar.xz" | sha256sum -c -
-          curl -fSL --retry 3 --retry-delay 10 -o src/node.tar.xz \
-            "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz"
-          echo "$NODE_SHA256  src/node.tar.xz" | sha256sum -c -
+          # Both archives come over links that drop now and then; a checksum
+          # mismatch is retried too, since a truncated download looks like one.
+          fetch() {
+            url="$1"; out="$2"; sha="$3"; name="$4"
+            for attempt in 1 2 3 4; do
+              if curl -fSL --retry 3 --retry-delay 5 --retry-all-errors -o "$out" "$url" \
+                  && echo "$sha  $out" | sha256sum -c --status; then
+                echo "::notice::$name fetched ($(stat -c%s "$out") bytes)"
+                return 0
+              fi
+              echo "::warning::$name attempt $attempt failed: $(curl -sSIL -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 'no response')"
+              rm -f "$out"
+              sleep 15
+            done
+            echo "::error::$name could not be fetched from $url"
+            return 1
+          }
+          fetch "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src.tar.xz" \
+            src/llvm.tar.xz "$LLVM_SHA256" "llvm-project-$LLVM_VERSION"
+          fetch "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.xz" \
+            src/node.tar.xz "$NODE_SHA256" "node-v$NODE_VERSION"
           ls -lh src
 
-      # The SDK is the same archive the release workflow caches, under the same
-      # key, so a repository that already built a HAP pays nothing here.
       - name: Restore the OpenHarmony SDK
         id: sdk
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
