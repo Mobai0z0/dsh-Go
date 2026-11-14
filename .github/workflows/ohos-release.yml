@@ -412,7 +412,13 @@ jobs:
               ls -1 "$root"
               exit 1; }
           done
-          rm -rf sdkraw unpack
+          # The unpacked parts ARE the SDK when the archive nests them in zips,
+          # so only the outer tree can go.
+          rm -rf sdkraw
+          case "$root" in
+            "$PWD/unpack"|"$PWD/unpack/"*) ;;
+            *) rm -rf unpack ;;
+          esac
           echo "SDK_ROOT=$root" >> "$GITHUB_ENV"
           df -h "$RUNNER_TEMP" | tail -1
 
@@ -612,18 +618,27 @@ jobs:
           files=("dist/dsh-go-$VERSION-ohos-arm64-libapp.so" dist/SHA256SUMS)
           hap="dist/dsh-go-$VERSION-ohos-arm64-unsigned.hap"
           if [ -f "$hap" ]; then files+=("$hap"); fi
-          # Every file is uploaded by name, so a failed upload fails the job
-          # instead of leaving a release that looks complete but is not.
+          # gh's own message is the only useful part of a failure here, so keep
+          # it and surface it as an annotation.
+          run_gh() {
+            label="$1"; shift
+            if ! out="$("$@" 2>&1)"; then
+              echo "::error::$label failed: $(printf '%s' "$out" | tail -n 6 | cut -c1-200 | tr '\n' ';')"
+              return 1
+            fi
+            printf '%s\n' "$out" | tail -n 3
+          }
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # Existing but incomplete: replace the assets and the notes in place.
-            gh release upload "$TAG" "${files[@]}" --clobber
-            gh release edit "$TAG" --title "$title" --notes-file notes.md
-            if [ "$PRERELEASE" = "true" ]; then gh release edit "$TAG" --prerelease; fi
+            run_gh "upload" gh release upload "$TAG" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            run_gh "edit" gh release edit "$TAG" --title "$title" --notes-file notes.md --repo "$GITHUB_REPOSITORY"
+            if [ "$PRERELEASE" = "true" ]; then
+              run_gh "edit-prerelease" gh release edit "$TAG" --prerelease --repo "$GITHUB_REPOSITORY"
+            fi
             echo "::notice::Completed the existing $TAG."
           else
-            args=(--title "$title" --notes-file notes.md)
+            args=(--title "$title" --notes-file notes.md --repo "$GITHUB_REPOSITORY")
             if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
-            gh release create "$TAG" "${files[@]}" "${args[@]}"
+            run_gh "create" gh release create "$TAG" "${files[@]}" "${args[@]}"
           fi
 
       - name: Verify the upload
