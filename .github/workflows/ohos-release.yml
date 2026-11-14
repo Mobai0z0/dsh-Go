@@ -424,18 +424,6 @@ jobs:
               ls -1 "$root"
               exit 1; }
           done
-          # @kit.ShareKit and @kit.CoreSpeechKit exist only in the HarmonyOS SDK.
-          # The --hms-stubs mode of check-arkts also replaces the loader's
-          # kit_configs, which SyscapTransform needs; copying just the two
-          # declaration trees leaves that alone.
-          stubs="$GITHUB_WORKSPACE/tooling/ohos/hms-stubs"
-          if [ -d "$stubs/api" ] && [ -d "$root/ets/api" ]; then
-            cp -n "$stubs"/api/* "$root/ets/api/" 2>/dev/null || true
-            cp -n "$stubs"/kits/* "$root/ets/kits/" 2>/dev/null || true
-            echo "HMS declarations copied into the SDK: $(ls "$stubs"/kits | wc -l) kits"
-          else
-            echo "::warning::no HMS stub declarations found at $stubs"
-          fi
           # hvigor runs tools from toolchains and native/llvm/bin. They are bash
           # scripts behind a `#!/bin/sh` shebang, which is bash on the machines
           # this was written on and dash on Ubuntu; dash dies on line 3.
@@ -507,7 +495,11 @@ jobs:
           } > "$probe" 2>&1 || true
           cat "$probe"
           log="$RUNNER_TEMP/hap.log"
-          if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --work "$PWD/work" \
+          # --hms-stubs supplies both the @kit.* declarations and the
+          # ets-loader/kit_configs entries that CompileArkTS looks up. It was
+          # blamed for the SyscapTransform failure earlier, but that was the
+          # aarch64 tools; with x86_64 ones it works.
+          if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --hms-stubs --work "$PWD/work" \
               --aot "$PWD/aot" \
               --native "$NATIVE_DIR" \
               --runtime "$PWD/natives/dsh-runtime.zip" \
