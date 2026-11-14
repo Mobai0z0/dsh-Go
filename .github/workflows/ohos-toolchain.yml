@@ -68,7 +68,8 @@ jobs:
           set -euo pipefail
           curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
           sudo bash /tmp/llvm.sh "$LLVM_MAJOR"
-          sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3
+          sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3 \
+            libssl-dev zlib1g-dev libatomic1
           for name in clang clang++ ld.lld llvm-ar llvm-nm llvm-ranlib llvm-readelf llvm-strip; do
             candidate="$(command -v "${name}-${LLVM_MAJOR}" || true)"
             [ -n "$candidate" ] || { echo "::error::$name for LLVM $LLVM_MAJOR is missing"; exit 1; }
@@ -181,6 +182,10 @@ jobs:
             exit 1
           fi
           tail -n 10 "$log"
+          # The LLVM build tree and its source archive are not needed again and
+          # are several GB the Node build tree wants back.
+          rm -rf work-runtimes src/llvm.tar.xz
+          df -h / | tail -1
 
       - name: Cross-compile Node
         env:
@@ -198,8 +203,13 @@ jobs:
               --output "$PWD/ohos-node-artifacts" \
               --jobs "${{ inputs.jobs }}" >"$log" 2>&1; then
             tail -n 60 "$log"
-            detail="$(grep -iE "error|missing|must be|failed|no such|refus" "$log" | tail -6 | tr '\n' ';')"
-            echo "::error::build-node failed: ${detail:0:900}"
+            make_err=""
+            for f in $(find work-node -maxdepth 3 \( -name make.log -o -name configure.log \) 2>/dev/null | head -2); do
+              echo "=== $f (tail) ==="
+              tail -n 30 "$f"
+              make_err="$make_err$(grep -iE 'error:|fatal error|undefined reference|cannot find|No space left|Killed|out of memory' "$f" | tail -3 | tr '\n' ';')"
+            done
+            echo "::error::build-node failed: ${make_err:0:520} | end: $(tail -n 2 "$log" | tr '\n' ';' | cut -c1-160) | disk $(df -h / | awk 'NR==2{print $4}') | mem $(free -m | awk 'NR==2{print $7}')MB"
             exit 1
           fi
           tail -n 10 "$log"
@@ -267,7 +277,8 @@ jobs:
           set -euo pipefail
           curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
           sudo bash /tmp/llvm.sh "$LLVM_MAJOR"
-          sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3
+          sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3 \
+            libssl-dev zlib1g-dev libatomic1
           command -v "clang-$LLVM_MAJOR"
 
       # The scripts take `--clang` and require two things apt cannot supply:
