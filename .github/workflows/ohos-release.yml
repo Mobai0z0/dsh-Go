@@ -519,8 +519,15 @@ jobs:
           } > "$probe" 2>&1 || true
           st="$SDK_ROOT/toolchains/syscap_tool"
           if [ -e "$st" ]; then
-            sed -i '1s|.*|#!/bin/bash|' "$st" 2>/dev/null || true
-            { echo "--- after forcing ---"; head -1 "$st"; } >> "$probe" 2>&1 || true
+            # "1: Syntax error" means shell ran the first line as code, so the
+            # file has no shebang at all. Insert one instead of replacing the
+            # line, which would delete real code.
+            if ! head -1 "$st" | grep -q '^#!'; then
+              sed -i '1i #!/bin/bash' "$st" 2>/dev/null || true
+            else
+              sed -i '1s|^#!.*|#!/bin/bash|' "$st" 2>/dev/null || true
+            fi
+            { echo "--- after forcing ---"; head -3 "$st"; } >> "$probe" 2>&1 || true
           fi
           cat "$probe"
           log="$RUNNER_TEMP/hap.log"
