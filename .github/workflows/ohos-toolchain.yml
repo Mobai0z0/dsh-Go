@@ -77,6 +77,23 @@ jobs:
           clang --version | head -1
           cmake --version | head -1
 
+      # build-runtimes.py and build-hap-libs.py both take `--clang` and expect
+      # clang++ next to it under that name; apt only ships clang-23/clang++-23.
+      # A directory of links gives them the names they look for.
+      - name: Prepare a clang that has clang++ beside it
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain/bin
+          ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang
+          if command -v "clang++-$LLVM_MAJOR" >/dev/null; then
+            ln -sf "$(command -v "clang++-$LLVM_MAJOR")" toolchain/bin/clang++
+          else
+            ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang++
+          fi
+          toolchain/bin/clang --version | head -1
+          echo "clang -dumpversion -> $(toolchain/bin/clang -dumpversion)"
+          test -x toolchain/bin/clang++
+
       - name: Fetch the pinned LLVM and Node sources
         env:
           NODE_VERSION: ${{ inputs.node_version }}
@@ -139,28 +156,42 @@ jobs:
       - name: Build the LLVM runtime libraries
         run: |
           set -euo pipefail
-          python3 runtime/ohos/node/build-runtimes.py \
-            --sdk-native "$SDK_NATIVE" \
-            --clang "$(command -v "clang-$LLVM_MAJOR")" \
-            --source-archive "$PWD/src/llvm.tar.xz" \
-            --work "$PWD/work-runtimes" \
-            --output "$PWD/ohos-llvm-runtimes" \
-            --jobs "${{ inputs.jobs }}"
+          log="$RUNNER_TEMP/runtimes.log"
+          if ! python3 runtime/ohos/node/build-runtimes.py \
+              --sdk-native "$SDK_NATIVE" \
+              --clang "$PWD/toolchain/bin/clang" \
+              --source-archive "$PWD/src/llvm.tar.xz" \
+              --work "$PWD/work-runtimes" \
+              --output "$PWD/ohos-llvm-runtimes" \
+              --jobs "${{ inputs.jobs }}" >"$log" 2>&1; then
+            tail -n 60 "$log"
+            detail="$(grep -iE "error|missing|must be|failed|no such|refus" "$log" | tail -6 | tr '\n' ';')"
+            echo "::error::build-runtimes failed: ${detail:0:900}"
+            exit 1
+          fi
+          tail -n 10 "$log"
 
       - name: Cross-compile Node
         env:
           NODE_VERSION: ${{ inputs.node_version }}
         run: |
           set -euo pipefail
-          python3 runtime/ohos/node/build-node.py \
-            --sdk-native "$SDK_NATIVE" \
-            --clang "$(command -v "clang-$LLVM_MAJOR")" \
-            --cxx-runtime "$PWD/ohos-llvm-runtimes" \
-            --source-archive "$PWD/src/node.tar.xz" \
-            --host-node "$(command -v node)" \
-            --work "$PWD/work-node" \
-            --output "$PWD/ohos-node-artifacts" \
-            --jobs "${{ inputs.jobs }}"
+          log="$RUNNER_TEMP/node.log"
+          if ! python3 runtime/ohos/node/build-node.py \
+              --sdk-native "$SDK_NATIVE" \
+              --clang "$PWD/toolchain/bin/clang" \
+              --cxx-runtime "$PWD/ohos-llvm-runtimes" \
+              --source-archive "$PWD/src/node.tar.xz" \
+              --host-node "$(command -v node)" \
+              --work "$PWD/work-node" \
+              --output "$PWD/ohos-node-artifacts" \
+              --jobs "${{ inputs.jobs }}" >"$log" 2>&1; then
+            tail -n 60 "$log"
+            detail="$(grep -iE "error|missing|must be|failed|no such|refus" "$log" | tail -6 | tr '\n' ';')"
+            echo "::error::build-node failed: ${detail:0:900}"
+            exit 1
+          fi
+          tail -n 10 "$log"
           file ohos-node-artifacts/libnode.so
           ls -lh ohos-node-artifacts
 
@@ -227,6 +258,23 @@ jobs:
           sudo bash /tmp/llvm.sh "$LLVM_MAJOR"
           sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3
           command -v "clang-$LLVM_MAJOR"
+
+      # build-runtimes.py and build-hap-libs.py both take `--clang` and expect
+      # clang++ next to it under that name; apt only ships clang-23/clang++-23.
+      # A directory of links gives them the names they look for.
+      - name: Prepare a clang that has clang++ beside it
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain/bin
+          ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang
+          if command -v "clang++-$LLVM_MAJOR" >/dev/null; then
+            ln -sf "$(command -v "clang++-$LLVM_MAJOR")" toolchain/bin/clang++
+          else
+            ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang++
+          fi
+          toolchain/bin/clang --version | head -1
+          echo "clang -dumpversion -> $(toolchain/bin/clang -dumpversion)"
+          test -x toolchain/bin/clang++
 
       - name: Download the library and the runtime libraries
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -303,7 +351,7 @@ jobs:
           set -euo pipefail
           python3 runtime/ohos/native/build-hap-libs.py \
             --sdk-native "$SDK_NATIVE" \
-            --clang "$(command -v "clang-$LLVM_MAJOR")" \
+            --clang "$PWD/toolchain/bin/clang" \
             --cxx-runtime "$PWD/built/ohos-llvm-runtimes" \
             --libnode-output "$PWD/built/ohos-libnode" \
             --node-source "$PWD/sources/node" \
