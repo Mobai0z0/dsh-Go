@@ -179,19 +179,33 @@ jobs:
           native="$(cd "$(dirname "$pkg")" && pwd)"
           rm -rf sdkraw
           echo "SDK_NATIVE=$native" >> "$GITHUB_ENV"
-          # Node links with the SDK's own ld.lld. If that file cannot run on
-          # this host -- wrong machine type, or a truncated archive member --
-          # link with the host's lld instead of failing an hour into the build.
-          echo "host: $(uname -m), sdk ld.lld: $(file -b "$native/llvm/bin/ld.lld" 2>/dev/null || echo missing)"
-          if ! "$native/llvm/bin/ld.lld" --version >/dev/null 2>&1; then
-            host_lld="$(command -v "ld.lld-$LLVM_MAJOR" || command -v ld.lld || true)"
-            [ -n "$host_lld" ] || { echo "::error::neither the SDK's ld.lld nor a host ld.lld can run"; exit 1; }
-            echo "::warning::the SDK's ld.lld does not run here; linking with $host_lld"
-            ln -sf "$host_lld" "$native/llvm/bin/ld.lld"
-            "$native/llvm/bin/ld.lld" --version
-          fi
-          python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print('SDK native', d['apiVersion'], d['version'])" "$native/oh-uni-package.json"
-          df -h / | tail -1
+          # The SDK ships its llvm tools as bash scripts behind a `#!/bin/sh`
+          # shebang. On Arch and macOS that is bash; on Ubuntu it is dash, which
+          # dies on line 3 with `Syntax error: "(" unexpected`. Point them at
+          # bash, then check that each one actually runs.
+          for f in "$native/llvm/bin/"*; do
+            [ -f "$f" ] || continue
+            if file -b "$f" 2>/dev/null | grep -q 'shell script' && head -1 "$f" | grep -q '^#!/bin/sh'; then
+              sed -i '1s|^#!/bin/sh|#!/bin/bash|' "$f"
+              echo "shebang -> bash: $(basename "$f")"
+            fi
+          done
+          for tool in llvm-ar llvm-nm llvm-ranlib llvm-readelf llvm-strip ld.lld; do
+            path="$native/llvm/bin/$tool"
+            [ -f "$path" ] || continue
+            if "$path" --version >/dev/null 2>&1; then
+              echo "::notice::$tool ok"
+              continue
+            fi
+            echo "::warning::$tool still does not run: $(file -b "$path")"
+            if [ "$tool" = ld.lld ]; then
+              host_lld="$(command -v "ld.lld-$LLVM_MAJOR" || command -v ld.lld || true)"
+              [ -n "$host_lld" ] || { echo "::error::no usable ld.lld"; exit 1; }
+              echo "::warning::linking with $host_lld instead"
+              ln -sf "$host_lld" "$path"
+              "$path" --version
+            fi
+          done
 
       - name: Install the pinned build tools
         run: npm ci --ignore-scripts --no-audit --no-fund --prefix runtime/ohos/node/build-tools
@@ -408,20 +422,34 @@ jobs:
           native="$(cd "$(dirname "$pkg")" && pwd)"
           rm -rf sdkraw
           echo "SDK_NATIVE=$native" >> "$GITHUB_ENV"
-          # Node links with the SDK's own ld.lld. If that file cannot run on
-          # this host -- wrong machine type, or a truncated archive member --
-          # link with the host's lld instead of failing an hour into the build.
-          echo "host: $(uname -m), sdk ld.lld: $(file -b "$native/llvm/bin/ld.lld" 2>/dev/null || echo missing)"
-          if ! "$native/llvm/bin/ld.lld" --version >/dev/null 2>&1; then
-            host_lld="$(command -v "ld.lld-$LLVM_MAJOR" || command -v ld.lld || true)"
-            [ -n "$host_lld" ] || { echo "::error::neither the SDK's ld.lld nor a host ld.lld can run"; exit 1; }
-            echo "::warning::the SDK's ld.lld does not run here; linking with $host_lld"
-            ln -sf "$host_lld" "$native/llvm/bin/ld.lld"
-            "$native/llvm/bin/ld.lld" --version
-          fi
+          # The SDK ships its llvm tools as bash scripts behind a `#!/bin/sh`
+          # shebang. On Arch and macOS that is bash; on Ubuntu it is dash, which
+          # dies on line 3 with `Syntax error: "(" unexpected`. Point them at
+          # bash, then check that each one actually runs.
+          for f in "$native/llvm/bin/"*; do
+            [ -f "$f" ] || continue
+            if file -b "$f" 2>/dev/null | grep -q 'shell script' && head -1 "$f" | grep -q '^#!/bin/sh'; then
+              sed -i '1s|^#!/bin/sh|#!/bin/bash|' "$f"
+              echo "shebang -> bash: $(basename "$f")"
+            fi
+          done
+          for tool in llvm-ar llvm-nm llvm-ranlib llvm-readelf llvm-strip ld.lld; do
+            path="$native/llvm/bin/$tool"
+            [ -f "$path" ] || continue
+            if "$path" --version >/dev/null 2>&1; then
+              echo "::notice::$tool ok"
+              continue
+            fi
+            echo "::warning::$tool still does not run: $(file -b "$path")"
+            if [ "$tool" = ld.lld ]; then
+              host_lld="$(command -v "ld.lld-$LLVM_MAJOR" || command -v ld.lld || true)"
+              [ -n "$host_lld" ] || { echo "::error::no usable ld.lld"; exit 1; }
+              echo "::warning::linking with $host_lld instead"
+              ln -sf "$host_lld" "$path"
+              "$path" --version
+            fi
+          done
 
-      # The addon sources are pinned in the repository, so both the URL and the
-      # digest are read from there instead of being copied into this file.
       - name: Fetch the pinned addon sources
         run: |
           set -euo pipefail
