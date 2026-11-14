@@ -503,6 +503,26 @@ jobs:
           set -euo pipefail
           JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           export JAVA_HOME
+          # check-arkts symlinks its sdk-public tree at this SDK and then runs
+          # toolchains/syscap_tool, which is a bash script behind #!/bin/sh.
+          # Record what is really there and force the shebang, so the next log
+          # says whether the fix landed.
+          probe="$RUNNER_TEMP/sdk-probe.txt"
+          {
+            echo "SDK_ROOT=$SDK_ROOT"
+            echo "--- listing ---"
+            ls -la "$SDK_ROOT" 2>&1 | head -20
+            echo "--- toolchains ---"
+            ls -la "$SDK_ROOT/toolchains" 2>&1 | head -20
+            echo "--- syscap_tool first line ---"
+            head -1 "$SDK_ROOT/toolchains/syscap_tool" 2>&1 || echo "no syscap_tool"
+          } > "$probe" 2>&1 || true
+          st="$SDK_ROOT/toolchains/syscap_tool"
+          if [ -e "$st" ]; then
+            sed -i '1s|.*|#!/bin/bash|' "$st" 2>/dev/null || true
+            { echo "--- after forcing ---"; head -1 "$st"; } >> "$probe" 2>&1 || true
+          fi
+          cat "$probe"
           log="$RUNNER_TEMP/hap.log"
           if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --work "$PWD/work" \
               --aot "$PWD/aot" \
@@ -554,6 +574,7 @@ jobs:
           dt="$(find "$PWD/work" -name diagnostics.txt -print -quit 2>/dev/null || true)"
           [ -n "$dt" ] && cp "$dt" ci-logs/diagnostics.txt || true
           cp "$RUNNER_TEMP/hap.log" ci-logs/hap.log 2>/dev/null || true
+          cp "$RUNNER_TEMP/sdk-probe.txt" ci-logs/sdk-probe.txt 2>/dev/null || true
           ls -lh ci-logs
           cd ci-logs
           git init -q
