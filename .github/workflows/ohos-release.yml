@@ -1,0 +1,610 @@
+# Publishes a HarmonyOS release whenever the Android repository ships one.
+#
+# This repository has no Android release job: APKs are published from the
+# release machine (docs/release.md), and this workflow only ever adds OHOS
+# tags (`ohos-<upstream tag>`), so the two never collide.
+#
+# A GitHub fork cannot receive another repository's `release` event, so this
+# runs on a schedule and diffs the upstream release list against its own tags.
+# The newest upstream release with no matching `ohos-` tag is the one built.
+#
+# What a run produces is the Dart half of a HAP (`libapp.so` from
+# `flutter assemble`), because that is the only part of the HAP that builds
+# without HarmonyOS Command Line Tools and the cross-compiled Node libraries
+# (app/ohos/README.md). Packaging the whole HAP is the optional `hap` job
+# below; it stays off until its two inputs exist.
+name: OHOS release
+
+on:
+  schedule:
+    # Every 6 hours. A fork runs no schedule until Actions is enabled on it.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream release tag to build; empty means the newest one'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Build only, publish nothing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ohos-release
+  cancel-in-progress: false
+
+env:
+  # The Android repository this one follows. Override with a repository
+  # variable when the fork follows a different one.
+  UPSTREAM_REPO: ${{ vars.OHOS_UPSTREAM_REPO || 'ccch1mneyyy/dsh-go' }}
+  # Every build job checks out `vars.OHOS_REF` (default `claude/harmonyos-ohos`),
+  # the branch that carries app/ohos and tooling/ohos. Once those files land on
+  # main, set the variable to `main`; nothing else changes.
+  FLUTTER_OHOS_TAG: 3.47.9-ohos-1.0.0
+  FLUTTER_OHOS_COMMIT: e5f752df3e25ec897da3c98a74bcced7c21b0bd3
+  TZ: Asia/Shanghai
+
+jobs:
+  # Picks the upstream release to build and decides whether it is new.
+  detect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.pick.outputs.publish }}
+      tag: ${{ steps.pick.outputs.tag }}
+      version: ${{ steps.pick.outputs.version }}
+      upstream_tag: ${{ steps.pick.outputs.upstream_tag }}
+      prerelease: ${{ steps.pick.outputs.prerelease }}
+    steps:
+      - name: Pick the upstream release
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG:-}" ]; then
+            upstream_tag="$INPUT_TAG"
+            # A tag typed by hand carries no prerelease flag of its own; read
+            # it from the upstream release, and treat a missing one as stable.
+            prerelease="$(gh api "repos/$UPSTREAM_REPO/releases/tags/$upstream_tag" \
+              --jq '.prerelease | tostring' 2>/dev/null || echo false)"
+          else
+            # Newest published upstream release that this workflow did not
+            # create itself. Drafts have no tag to follow and are skipped.
+            picked="$(gh api "repos/$UPSTREAM_REPO/releases?per_page=100" \
+              --jq '[.[] | select(.draft == false) | select(.tag_name | startswith("ohos-") | not)]
+                    | sort_by(.published_at)
+                    | if length == 0 then empty
+                      else (last | [.tag_name, (.prerelease | tostring)] | @tsv) end')"
+            if [ -z "$picked" ]; then
+              echo "No upstream release to follow in $UPSTREAM_REPO" >&2
+              upstream_tag=""
+              prerelease=false
+            else
+              upstream_tag="${picked%%$'\t'*}"
+              prerelease="${picked#*$'\t'}"
+            fi
+          fi
+
+          tag="ohos-$upstream_tag"
+          version="${upstream_tag#v}"
+          {
+            echo "upstream_tag=$upstream_tag"
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -z "$upstream_tag" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Nothing to do: the upstream repository has no release yet."
+            exit 0
+          fi
+
+          # The same version name never rebuilds (docs/release.md): a HAP from
+          # an identical version name is indistinguishable to whoever installed it.
+          # Two exceptions converge on a later run: an interrupted upload, and a
+          # HAP that failed to build while the toolchain release exists.
+          names="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' 2>/dev/null || echo '')"
+          have=0
+          haps=0
+          if [ -n "$names" ]; then
+            have="$(printf '%s\n' "$names" | wc -l)"
+            haps="$(printf '%s\n' "$names" | grep -c '\.hap$' || true)"
+          fi
+          # A repository that has the toolchain release is expected to ship a HAP;
+          # one that does not is complete without it.
+          need=2
+          if gh release view ohos-toolchain --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            need=3
+          fi
+          if [ "$have" -ge "$need" ] && { [ "$need" -lt 3 ] || [ "$haps" -ge 1 ]; }; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag already exists and is complete ($have assets); nothing to rebuild."
+          elif [ "$have" -gt 0 ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$tag exists with $have assets and no HAP-ready set; completing it."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Will build $tag from upstream $upstream_tag."
+          fi
+
+      - name: Summarise
+        run: |
+          {
+            echo "| item | value |"
+            echo "|---|---|"
+            echo "| upstream | \`${{ env.UPSTREAM_REPO }}\` |"
+            echo "| upstream tag | \`${{ steps.pick.outputs.upstream_tag }}\` |"
+            echo "| OHOS tag | \`${{ steps.pick.outputs.tag }}\` |"
+            echo "| version | \`${{ steps.pick.outputs.version }}\` |"
+            echo "| prerelease | ${{ steps.pick.outputs.prerelease }} |"
+            echo "| build | ${{ steps.pick.outputs.publish }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Sync before anything is built. The AOT job checks out the branch this
+  # fast-forwards, so a release always starts from the newest upstream code
+  # rather than whatever the last scheduled sync happened to leave behind.
+  # A failed sync stops the release: shipping stale code is worse than a red run.
+  sync:
+    needs: detect
+    if: needs.detect.outputs.publish == 'true'
+    uses: ./.github/workflows/sync-upstream.yml
+
+  # The Dart half of the HAP, on the runner that has oh-flutter's AOT tools.
+  # Same steps as ci's OHOS compile job, from the same pinned SDK commit.
+  aot:
+    needs: [detect, sync]
+    # `!failure()` rather than `needs.sync.result == 'success'`: a sync that had
+    # nothing to do (not a fork) skips its jobs, and that must not block the
+    # build. A sync that actually failed still stops it.
+    if: needs.detect.outputs.publish == 'true' && !failure() && !cancelled()
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ vars.OHOS_REF || 'claude/harmonyos-ohos' }}
+          persist-credentials: false
+
+      # oh-flutter comes from atomgit, its tools from Huawei's OBS and the OHOS
+      # plugins from gitcode; each of them drops connections now and then.
+      # Cached, a run fetches none of them; when it has to, it tries three times.
+      - name: Restore oh-flutter
+        id: sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/flutter-ohos
+          key: flutter-ohos-${{ env.FLUTTER_OHOS_COMMIT }}-${{ hashFiles('tooling/ohos/patch_framework.py') }}
+
+      - name: Install oh-flutter
+        if: steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          for attempt in 1 2 3; do
+            rm -rf ~/flutter-ohos
+            git clone --depth 1 --branch "$FLUTTER_OHOS_TAG" https://atomgit.com/oh-flutter/flutter_flutter.git ~/flutter-ohos && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
+
+      - name: Put oh-flutter on the path
+        run: |
+          test "$(git -C ~/flutter-ohos rev-parse HEAD)" = "$FLUTTER_OHOS_COMMIT"
+          echo "$HOME/flutter-ohos/bin" >> "$GITHUB_PATH"
+
+      # Framework branches that read defaultTargetPlatform directly cannot be
+      # reached from ThemeData.platform; the patcher rewrites those in the SDK.
+      - name: Patch the framework's HarmonyOS branches
+        run: python3 tooling/ohos/patch_framework.py ~/flutter-ohos
+
+      - name: Fetch the SDK's own tools
+        run: |
+          flutter --version
+          for attempt in 1 2 3; do
+            flutter precache --ohos && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 20
+          done
+
+      - name: Save oh-flutter
+        if: steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/flutter-ohos
+          key: ${{ steps.sdk.outputs.cache-primary-key }}
+
+      - name: Restore the pub cache
+        id: pub
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.pub-cache
+          key: ohos-pub-${{ env.FLUTTER_OHOS_COMMIT }}-${{ hashFiles('app/pubspec.lock', 'app/ohos/pubspec_overrides.ohos.yaml', 'packages/*/pubspec.yaml') }}
+          restore-keys: ohos-pub-${{ env.FLUTTER_OHOS_COMMIT }}-
+
+      # dart pub, not flutter pub: the latter goes on to refresh the ohos
+      # project, which needs the HarmonyOS SDK this job does without.
+      - name: Resolve dependencies with the OHOS plugins
+        working-directory: app
+        run: |
+          get() {
+            for attempt in 1 2 3; do
+              dart pub get && return
+              [ "$attempt" = 3 ] && return 1
+              sleep 20
+            done
+          }
+          cp ohos/pubspec_overrides.ohos.yaml pubspec_overrides.yaml
+          get
+          python3 ../tooling/ohos/vendor_platform_switches.py
+          get
+
+      - name: Save the pub cache
+        if: steps.pub.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.pub-cache
+          key: ${{ steps.pub.outputs.cache-primary-key }}
+
+      # No icon tree shaking: oh-flutter's const_finder snapshot fails on its
+      # own Dart with "Invalid SDK hash". The Dart defines are the ones
+      # tooling/ohos/build-hap.sh passes (ENABLE_FLEX_OVERFLOW=false, base64).
+      - name: Compile to libapp.so
+        working-directory: app
+        run: |
+          flutter assemble \
+            -dTargetPlatform=ohos-arm64 \
+            -dBuildMode=release \
+            -dTargetFile=lib/main.dart \
+            -dTreeShakeIcons=false \
+            -dDartDefines=RU5BQkxFX0ZMRVhfT1ZFUkZMT1c9ZmFsc2U= \
+            --output=build/ohos-aot \
+            ohos_aot_bundle_release_ohos-arm64
+
+      - name: Report the result
+        working-directory: app
+        run: |
+          find build/ohos-aot -maxdepth 2 | head -20
+          lib="$(find build/ohos-aot .dart_tool/flutter_build \( -name app.so -o -name libapp.so \) | head -1)"
+          test -n "$lib"
+          file "$lib"
+          echo "$(basename "$lib"): $(wc -c < "$lib") bytes" >> "$GITHUB_STEP_SUMMARY"
+          wc -c "$lib"
+
+      - name: Keep the compiled app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ohos-aot
+          path: app/build/ohos-aot
+          if-no-files-found: error
+          retention-days: 7
+
+  # The unsigned HAP.
+  #
+  # Everything public is fetched automatically: the OpenHarmony 7.0-Release
+  # public SDK is exactly 26.0.0.38, the version check-arkts.sh is pinned to,
+  # and hvigor comes from the public registry inside the script. The one input
+  # that cannot be produced here is the cross-compiled Node library --
+  # runtime/ohos/native/build-hap-libs.py needs a self-built clang and a full
+  # Node cross-compile -- so it comes from this repository's `ohos-toolchain`
+  # release, uploaded once from a prepared machine.
+  #
+  # No toolchain release means no HAP for that version; the release still
+  # carries the AOT bundle. That is why this job is continue-on-error.
+  hap:
+    needs: [detect, aot]
+    if: needs.detect.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    continue-on-error: true
+    env:
+      NODE_VERSION: 24.22.1
+      SDK_URL: ${{ vars.OHOS_SDK_URL || 'https://repo.huaweicloud.com/openharmony/os/7.0-Release/ohos-sdk-windows_linux-public.tar.gz' }}
+      SDK_SHA256: ${{ vars.OHOS_SDK_SHA256 || '130a438cbcddd46a2a5b09ee9925339cddf4cca99223329b860f96a5c72f338f' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ vars.OHOS_REF || 'claude/harmonyos-ohos' }}
+          persist-credentials: false
+
+      # One release holds the libraries CI cannot build. Without it there is
+      # nothing to package, so every later step is gated on this check.
+      - name: Look for the toolchain release
+        id: toolchain
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view ohos-toolchain --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No ohos-toolchain release; this version ships without a HAP. See docs/ohos-release.md."
+          fi
+
+      - name: Download the compiled app
+        if: steps.toolchain.outputs.found == 'true'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: ohos-aot
+          path: aot
+
+      - if: steps.toolchain.outputs.found == 'true'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # hvigor is a Node program; pin the same runtime the project builds with
+      # instead of whatever the runner image happens to ship.
+      - if: steps.toolchain.outputs.found == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # The SDK is a 3 GB tarball; cached by digest so a repeat run downloads
+      # none of it. Only the tarball is cached, not the unpacked tree: unpacking
+      # takes a minute, while a cache entry of the tree would sit near the
+      # 10 GB limit.
+      - name: Restore the OpenHarmony SDK
+        id: sdk
+        if: steps.toolchain.outputs.found == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: sdk.tar.gz
+          key: ohos-sdk-${{ env.SDK_SHA256 }}
+
+      - name: Download the OpenHarmony SDK
+        if: steps.toolchain.outputs.found == 'true' && steps.sdk.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 3 --retry-delay 10 -o sdk.tar.gz "$SDK_URL"
+          echo "$SDK_SHA256  sdk.tar.gz" | sha256sum -c -
+
+      - name: Save the OpenHarmony SDK
+        if: steps.toolchain.outputs.found == 'true' && steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: sdk.tar.gz
+          key: ${{ steps.sdk.outputs.cache-primary-key }}
+
+      # The tarball carries both the Windows and the Linux SDK, and the Linux
+      # half is four zips inside it. Rather than guessing that layout, find
+      # ets/oh-uni-package.json and treat its grandparent as the SDK root.
+      - name: Unpack the OpenHarmony SDK
+        if: steps.toolchain.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP" | tail -1
+          mkdir -p sdkraw unpack
+          tar -xzf sdk.tar.gz -C sdkraw
+          rm -f sdk.tar.gz
+          find sdkraw -maxdepth 4 -type d -name windows -exec rm -rf {} + 2>/dev/null || true
+          for part in ets js native toolchains; do
+            zip="$(find sdkraw -maxdepth 4 -type f -name "${part}-*.zip" | head -1)"
+            [ -n "$zip" ] && unzip -q "$zip" -d unpack
+          done
+          pkg="$(find sdkraw unpack -path '*/ets/oh-uni-package.json' | head -1)"
+          if [ -z "$pkg" ]; then
+            echo "::error::the SDK archive has no ets/oh-uni-package.json"
+            find sdkraw unpack -maxdepth 4 -type d | head -40
+            exit 1
+          fi
+          root="$(cd "$(dirname "$(dirname "$pkg")")" && pwd)"
+          for part in ets js native toolchains; do
+            [ -f "$root/$part/oh-uni-package.json" ] || {
+              echo "::error::the SDK is missing $part under $root"
+              ls -1 "$root"
+              exit 1; }
+          done
+          rm -rf sdkraw unpack
+          echo "SDK_ROOT=$root" >> "$GITHUB_ENV"
+          df -h "$RUNNER_TEMP" | tail -1
+
+      - name: Fetch the native libraries
+        if: steps.toolchain.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p natives
+          gh release download ohos-toolchain --repo "$GITHUB_REPOSITORY" --clobber \
+            --pattern 'hap-libs.zip' --pattern 'dsh-runtime.zip' --dir natives
+          unzip -q natives/hap-libs.zip -d natives/libs
+          dir="$(dirname "$(find natives/libs -type f -name libnode.so | head -1)")"
+          if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+            echo "::error::hap-libs.zip has no libnode.so"
+            find natives -type f | head -20
+            exit 1
+          fi
+          echo "NATIVE_DIR=$dir" >> "$GITHUB_ENV"
+
+      - name: Fetch the pinned Node headers
+        if: steps.toolchain.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 3 --retry-delay 10 -o node.tar.gz \
+            "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.gz"
+          tar -xzf node.tar.gz "node-v$NODE_VERSION/src"
+          rm -f node.tar.gz
+
+      - name: Package the HAP
+        if: steps.toolchain.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+          export JAVA_HOME
+          tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --work "$PWD/work" \
+            --aot "$PWD/aot" \
+            --native "$NATIVE_DIR" \
+            --runtime "$PWD/natives/dsh-runtime.zip" \
+            --node-headers "$PWD/node-v$NODE_VERSION/src"
+
+      - name: Keep the HAP
+        if: steps.toolchain.outputs.found == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ohos-hap
+          path: |
+            work/**/*.hap
+            **/*unsigned.hap
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes the release. Everything above is read-only; only this job writes.
+  # It waits for the optional HAP so that a HAP built in this run is attached,
+  # but a skipped or failed HAP does not stop the release (always()).
+  publish:
+    needs: [detect, aot, hap]
+    if: always() && needs.detect.outputs.publish == 'true' && needs.aot.result == 'success' && inputs.dry_run != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the compiled app
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: ohos-aot
+          path: dist/aot
+
+      - name: Download the HAP if this run built one
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        continue-on-error: true
+        with:
+          name: ohos-hap
+          path: dist/hap
+
+      - name: Collect the files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.detect.outputs.tag }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          lib="$(find dist/aot -name libapp.so -o -name app.so | head -1)"
+          test -n "$lib" || { echo "The AOT bundle has no libapp.so"; exit 1; }
+          # One stable artifact name; the version lives in the release, not the file.
+          cp "$lib" "dist/dsh-go-$VERSION-ohos-arm64-libapp.so"
+          hap="$(find dist/hap -name '*.hap' 2>/dev/null | head -1)"
+          if [ -n "$hap" ]; then
+            cp "$hap" "dist/dsh-go-$VERSION-ohos-arm64-unsigned.hap"
+            echo "HAP attached: $(basename "$hap")" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice::No HAP in this run; the release carries the AOT bundle only."
+          fi
+          cd dist
+          # Plain file names, the same shape `sha256sum -c` reads back and the
+          # APK releases use (docs/release.md).
+          sha256sum "dsh-go-$VERSION-ohos-arm64-libapp.so" > SHA256SUMS
+          if [ -n "$hap" ]; then sha256sum "dsh-go-$VERSION-ohos-arm64-unsigned.hap" >> SHA256SUMS; fi
+          cat SHA256SUMS
+
+      - name: Write the notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_TAG: ${{ needs.detect.outputs.upstream_tag }}
+          UPSTREAM_REPO: ${{ env.UPSTREAM_REPO }}
+          VERSION: ${{ needs.detect.outputs.version }}
+        run: |
+          set -euo pipefail
+          upstream_url="https://github.com/$UPSTREAM_REPO/releases/tag/$UPSTREAM_TAG"
+          upstream_body="$(gh api "repos/$UPSTREAM_REPO/releases/tags/$UPSTREAM_TAG" --jq '.body // ""' || echo '')"
+          hap="dist/dsh-go-$VERSION-ohos-arm64-unsigned.hap"
+          {
+            # The upstream notes are the notes. This fork adds a header line so
+            # the version can be traced back, and its own artifact list at the
+            # end; nothing in between is rewritten.
+            echo "对应上游版本 / Upstream release: [\`$UPSTREAM_TAG\`]($upstream_url)"
+            echo
+            if [ -n "$upstream_body" ]; then
+              printf '%s\n' "$upstream_body"
+            else
+              echo "_上游这一版没有写更新说明。/ Upstream published no notes for this release._"
+            fi
+            echo
+            echo "---"
+            echo
+            echo "### 本仓库的产物 / Artifacts in this fork"
+            echo
+            echo "| 项 / Item | 值 / Value |"
+            echo "|---|---|"
+            echo "| 上游 tag / Upstream tag | \`$UPSTREAM_TAG\` |"
+            echo "| 产物 / Artifact | \`libapp.so\` (ohos-arm64) |"
+            if [ -f "$hap" ]; then echo "| HAP | \`$(basename "$hap")\` (unsigned) |"; fi
+            echo "| 校验 / Checksums | \`SHA256SUMS\` |"
+            echo
+            if [ -f "$hap" ]; then
+              echo "附件是 HarmonyOS arm64 的 Dart AOT 产物（\`libapp.so\`，HAP 里 Dart 那一半）和"
+              echo "\`dsh-go-$VERSION-ohos-arm64-unsigned.hap\`。**HAP 没有签名**，装不到华为手机；"
+              echo "要用它，得在装了 HarmonyOS Command Line Tools 的机器上用 \`tooling/ohos/build-hap.sh\`"
+              echo "按 \`docs/design/harmonyos/distribution-builds.md\` 重新签一次。"
+              echo
+              echo "The attachments are the HarmonyOS arm64 Dart AOT half (\`libapp.so\`) and"
+              echo "\`dsh-go-$VERSION-ohos-arm64-unsigned.hap\`. **The HAP is unsigned**, so it does not"
+              echo "install on a Huawei phone: sign it again with \`tooling/ohos/build-hap.sh\` on a machine"
+              echo "that has the HarmonyOS command line tools."
+            else
+              echo "**这里没有可安装的 HAP。** 附件是 HarmonyOS arm64 的 Dart AOT 产物（\`libapp.so\`），"
+              echo "也就是 HAP 里的 Dart 那一半。完整 HAP 还需要 HarmonyOS Command Line Tools 和交叉编译的"
+              echo "Node 原生库，只能在准备好的机器上用 \`tooling/ohos/build-hap.sh\` 打出来，见"
+              echo "\`app/ohos/README.md\` 与 \`docs/design/harmonyos/distribution-builds.md\`。"
+              echo
+              echo "**There is no installable HAP here.** The attachment is the Dart AOT half of a HAP"
+              echo "(\`libapp.so\`) for HarmonyOS arm64. Packaging the whole HAP needs the HarmonyOS command"
+              echo "line tools and the cross-compiled Node libraries, so it happens on a prepared machine"
+              echo "with \`tooling/ohos/build-hap.sh\`."
+            fi
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.detect.outputs.tag }}
+          VERSION: ${{ needs.detect.outputs.version }}
+          PRERELEASE: ${{ needs.detect.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          title="DSH Go $VERSION · HarmonyOS"
+          files=("dist/dsh-go-$VERSION-ohos-arm64-libapp.so" dist/SHA256SUMS)
+          hap="dist/dsh-go-$VERSION-ohos-arm64-unsigned.hap"
+          if [ -f "$hap" ]; then files+=("$hap"); fi
+          # Every file is uploaded by name, so a failed upload fails the job
+          # instead of leaving a release that looks complete but is not.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Existing but incomplete: replace the assets and the notes in place.
+            gh release upload "$TAG" "${files[@]}" --clobber
+            gh release edit "$TAG" --title "$title" --notes-file notes.md
+            if [ "$PRERELEASE" = "true" ]; then gh release edit "$TAG" --prerelease; fi
+            echo "::notice::Completed the existing $TAG."
+          else
+            args=(--title "$title" --notes-file notes.md)
+            if [ "$PRERELEASE" = "true" ]; then args+=(--prerelease); fi
+            gh release create "$TAG" "${files[@]}" "${args[@]}"
+          fi
+
+      - name: Verify the upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.detect.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            names="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"
+            if [ "$(printf '%s\n' "$names" | wc -l)" -ge 2 ]; then
+              printf '%s\n' "$names"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "The release is missing assets: $names" >&2
+          exit 1

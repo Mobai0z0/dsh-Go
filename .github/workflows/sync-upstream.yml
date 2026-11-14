@@ -1,0 +1,178 @@
+# Keeps this fork level with the repository it was forked from.
+#
+# The default branch goes through GitHub's own merge-upstream call: fast-forward
+# when the fork has no commits of its own, a merge when both sides moved, and a
+# hard failure with a conflict message when they disagree. Nothing is forced
+# here, so a bad sync never loses work.
+#
+# Extra branches (the HarmonyOS work lives on one) are fast-forwarded with a
+# plain push. A branch that has diverged is reported and left alone; `force`
+# overwrites it, and is the only way this workflow throws commits away.
+name: Sync upstream
+
+on:
+  schedule:
+    # Every 6 hours, offset from the OHOS release job (…:17) so the two never
+    # fight over the same minute of runner capacity.
+    - cron: '43 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      branches:
+        description: 'Upstream branches to fast-forward, comma or space separated (empty = the SYNC_BRANCHES variable)'
+        required: false
+        type: string
+        default: ''
+      force:
+        description: 'Overwrite a branch that has diverged from upstream'
+        type: boolean
+        default: false
+  # The OHOS release calls this first, so a build never starts from code that
+  # was still behind upstream when the release was picked up.
+  workflow_call:
+    inputs:
+      branches:
+        description: 'Upstream branches to fast-forward (empty = the SYNC_BRANCHES variable)'
+        required: false
+        type: string
+        default: ''
+      force:
+        description: 'Overwrite a branch that has diverged from upstream'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  # The fork's default branch, through GitHub's merge-upstream endpoint.
+  default-branch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      fork: ${{ steps.resolve.outputs.fork }}
+      upstream: ${{ steps.resolve.outputs.upstream }}
+    steps:
+      - name: Resolve the upstream repository
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OVERRIDE: ${{ vars.SYNC_UPSTREAM_REPO }}
+        run: |
+          set -euo pipefail
+          info="$(gh api "repos/$GITHUB_REPOSITORY" --jq '[.fork, (.parent.full_name // "")] | @tsv')"
+          fork="${info%%$'\t'*}"
+          upstream="${info#*$'\t'}"
+          # A variable wins over the parent GitHub reports, so a fork of a fork
+          # can follow whichever repository it wants.
+          if [ -n "${OVERRIDE:-}" ]; then upstream="$OVERRIDE"; fi
+          {
+            echo "fork=$fork"
+            echo "upstream=$upstream"
+          } >> "$GITHUB_OUTPUT"
+          echo "fork=$fork upstream=$upstream" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge upstream into the default branch
+        if: steps.resolve.outputs.fork == 'true' && steps.resolve.outputs.upstream != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if out="$(gh api --method POST "repos/$GITHUB_REPOSITORY/merge-upstream" \
+            -f branch="$BRANCH" --jq '.merge_type // .message' 2>&1)"; then
+            echo "::notice::$BRANCH: $out"
+            echo "- \`$BRANCH\`: $out" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if printf '%s' "$out" | grep -qi "not a fork"; then
+            echo "::notice::$GITHUB_REPOSITORY is not a fork; there is nothing to sync."
+            exit 0
+          fi
+          if printf '%s' "$out" | grep -qi "conflict"; then
+            # Both sides changed the same lines. Nothing here can pick a winner,
+            # so say what to do instead of retrying forever.
+            echo "::error::$BRANCH has conflicts between this fork and upstream."
+            echo "  Resolve by hand: git fetch upstream && git merge upstream/$BRANCH"
+            echo "  Then keep local edits in new files only (see FORK.md), not in upstream files."
+            echo "$out" >&2
+            exit 1
+          fi
+          echo "$out" >&2
+          exit 1
+
+  # Branches other than the default one. GitHub's merge-upstream only handles
+  # the default branch, so these are fetched and pushed here.
+  branches:
+    needs: default-branch
+    if: needs.default-branch.outputs.fork == 'true' && needs.default-branch.outputs.upstream != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Fast-forward the configured branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REPO: ${{ needs.default-branch.outputs.upstream }}
+          BRANCHES_INPUT: ${{ inputs.branches }}
+          BRANCHES_VAR: ${{ vars.SYNC_BRANCHES }}
+          FORCE_INPUT: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          # Default to the HarmonyOS branch: without it the release workflow has
+          # nothing to check out. A variable or the dispatch input overrides it,
+          # and `-` turns the extra sync off entirely.
+          branches="$(printf '%s' "${BRANCHES_INPUT:-${BRANCHES_VAR:-claude/harmonyos-ohos}}" | tr ',' ' ')"
+          [ "$branches" = "-" ] && branches=""
+          if [ -z "${branches// /}" ]; then
+            echo "::notice::Extra branch sync is off."
+            exit 0
+          fi
+          force="${FORCE_INPUT:-false}"
+
+          wb="$RUNNER_TEMP/sync"
+          rm -rf "$wb" && mkdir -p "$wb" && cd "$wb"
+          git init -q
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          for b in $branches; do
+            [ -n "$b" ] || continue
+            # blob:none keeps the commit graph but no file contents: enough for
+            # merge-base, far less to download than a full clone.
+            if ! git fetch -q --filter=blob:none --no-tags upstream "+refs/heads/$b:refs/remotes/upstream/$b"; then
+              echo "::warning::Upstream has no branch \`$b\`; skipped."
+              echo "- \`$b\`: missing upstream" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            up="$(git rev-parse "refs/remotes/upstream/$b")"
+
+            cur=""
+            if git fetch -q --filter=blob:none --no-tags origin "+refs/heads/$b:refs/remotes/origin/$b" 2>/dev/null; then
+              cur="$(git rev-parse "refs/remotes/origin/$b")"
+            fi
+
+            if [ -n "$cur" ] && [ "$cur" = "$up" ]; then
+              echo "::notice::$b is already at $up."
+              echo "- \`$b\`: up to date" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if [ -n "$cur" ] && ! git merge-base --is-ancestor "$cur" "$up"; then
+              # A branch of its own commits is the expected shape of a fork's
+              # working branch, not a broken sync: report it and leave it alone.
+              if [ "$force" != "true" ]; then
+                echo "::warning::$b has commits that upstream does not; left alone. Re-run with force to replace it."
+                echo "- \`$b\`: diverged, left alone" >> "$GITHUB_STEP_SUMMARY"
+                continue
+              fi
+              echo "::warning::$b diverged; overwriting it because force was asked for."
+              git push -q --force origin "$up:refs/heads/$b"
+            else
+              git push -q origin "$up:refs/heads/$b"
+            fi
+            echo "::notice::$b advanced to $up."
+            echo "- \`$b\`: advanced to \`$up\`" >> "$GITHUB_STEP_SUMMARY"
+          done
