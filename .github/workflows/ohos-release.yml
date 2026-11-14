@@ -468,8 +468,17 @@ jobs:
               head -n 40 work/diagnostics.txt
               diag="$(head -n 12 work/diagnostics.txt | cut -c1-100 | tr '\n' ';' || true)"
             fi
+            # The script writes hvigor's own output to a per-run directory; that
+            # is the only place a task failure explains itself.
+            hg="$(find "$PWD/work" -name hvigor.log -print -quit 2>/dev/null || true)"
+            herr=""
+            if [ -n "$hg" ]; then
+              echo "=== $hg (tail) ==="
+              tail -n 40 "$hg"
+              herr="$(grep -iE "error|failed|exception|cannot|not found|missing" "$hg" 2>/dev/null | tail -6 | cut -c1-150 | tr '\n' ';' || true)"
+            fi
             end="$(tail -n 5 "$log" | cut -c1-150 | tr '\n' ';' || true)"
-            echo "::error::check-arkts failed: ${diag:0:480} | end: ${end:0:400}"
+            echo "::error::check-arkts failed: ${herr:0:600} | diag: ${diag:0:300} | end: ${end:0:200}"
             exit 1
           fi
           tail -n 20 "$log"
