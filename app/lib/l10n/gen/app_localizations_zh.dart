@@ -5779,6 +5779,67 @@ class L10nZh extends L10n {
   String get companionAdaptNetwork => '网络不通';
 
   @override
+  String get automaticDiagnosticsRecover => '恢复本地记录';
+
+  @override
+  String get automaticDiagnosticsRecoverHint => '仅在本机恢复分析记录，跳过已留存故障，不重新发送旧请求。';
+
+  @override
+  String get automaticDiagnosticsTitle => '自动故障分析';
+
+  @override
+  String get automaticDiagnosticsHint => '默认关闭 · 仅本机、前台且引擎可用时发送；同版本同类故障 24 小时内合并。关闭后停止新请求，已发送信息无法撤回。';
+
+  @override
+  String get automaticDiagnosticsConsentTitle => '开启自动故障分析？';
+
+  @override
+  String get automaticDiagnosticsConsent =>
+      '发生故障时，App 会将脱敏的版本、Android 系统信息、运行时状态、错误类别、语音阶段及自身进程退出原因，发送给当前本机引擎配置的模型服务商，可能产生模型费用。不含聊天正文、录音、凭据或原始日志。报告保存在独立的只读分析对话，不自动切换当前对话，不自动执行修复或向 GitHub 外发。关闭或切换主机后不再发起新分析，并尝试停止已有分析；已发送的信息无法撤回。';
+
+  @override
+  String get automaticDiagnosticsEnable => '同意并开启';
+
+  @override
+  String get automaticDiagnosticsOff => '已关闭';
+
+  @override
+  String get automaticDiagnosticsWaiting => '等待本机连接、前台与引擎可用';
+
+  @override
+  String get automaticDiagnosticsReady => '已开启 · 等待新故障';
+
+  @override
+  String get automaticDiagnosticsCollecting => '正在采集结构化故障信息';
+
+  @override
+  String get automaticDiagnosticsAnalyzing => '正在独立对话分析（最多 2 分钟）';
+
+  @override
+  String get automaticDiagnosticsComplete => '分析完成';
+
+  @override
+  String get automaticDiagnosticsCancelled => '分析已停止或中断；不会自动重试';
+
+  @override
+  String get automaticDiagnosticsFailed => '分析失败；本次故障不会自动重试';
+
+  @override
+  String get automaticDiagnosticsStoreFailed => '无法保存诊断设置或状态；自动分析已停止';
+
+  @override
+  String get automaticDiagnosticsCancelFailed => '停止请求失败；请在报告对话中检查并手动停止';
+
+  @override
+  String get automaticDiagnosticsViewReport => '查看最新分析对话';
+
+  @override
+  String get automaticDiagnosticsReportHint => '仅点击时打开，不打断当前对话；报告可能仍在生成或已中断。';
+
+  @override
+  String get automaticDiagnosticsReportTitle => '自动故障分析报告';
+
+  @override
   String get systemImeTitle => '系统输入法诊断';
 
   @override
@@ -11629,16 +11690,16 @@ class L10nZh extends L10n {
       'invalid': '请求或结果无法验证。',
       'display': '临时展示屏未能确认。',
       'input': '输入受理或送达未确认，不会重放已派发输入。',
-      'cleanup': '资源清理未确认，仅可重试清理。',
+      'cleanup': '资源清理未确认，请重新连接通道后再检查。',
       'denied': '系统拒绝了操作。',
       'timeout': '操作超时，已派发工作仍可能完成。',
       'unavailable': '本机状态或已选通道不可用。',
       'target_unavailable': '无法核实固定目标，请完成清理后再开始。',
       'target_changed': '原目标已变化，请仅继续清理。',
-      'target_cleanup': '目标清理未确认，请仅重试清理。',
+      'target_cleanup': '目标清理未确认，请重新连接通道后再检查。',
       'target_main': '目标曾出现在主屏，已停止后续步骤，请完成清理。',
       'target_readback': '固定目标计数或文本回读不符，不要重复操作，请完成清理。',
-      'tree_cleanup': '树连接清理未确认，请仅重试清理。',
+      'tree_cleanup': '树连接清理未确认，请重新连接通道后再检查。',
       'target_launch': '目标启动被拒绝或未确认，请检查设备并完成清理。',
       'frame_unavailable': '未取得可用的本地图样帧，请完成清理后再开始新的自检。',
       'frame_mismatch': '实际画面与本次目标及阶段不符，请完成清理。',
@@ -24753,16 +24814,16 @@ class L10nZh extends L10n {
   String get workshopErrorOtherOrigin => '这是从别的工坊装的。';
 
   @override
-  String get workshopErrorSignIn => '需要先登录论坛账号。';
+  String get workshopErrorSignIn => '需要先登录 GitHub 账号。';
 
   @override
   String get workshopErrorConsent => '需要先同意把登录凭据交给工坊核对身份。';
 
   @override
-  String get workshopErrorForumMismatch => '登录的论坛和工坊认的不是同一个，请重新登录。';
+  String get workshopErrorAccountMismatch => '登录的账号来源和工坊认的不一致，请重新登录。';
 
   @override
-  String get workshopErrorForumDown => '论坛暂时联系不上，稍后再试。';
+  String get workshopErrorAccountDown => '暂时没能向 GitHub 核对身份，稍后再试。';
 
   @override
   String get workshopErrorPreferences => '没能保存本机的记录，这一步没有继续。';
@@ -24780,22 +24841,22 @@ class L10nZh extends L10n {
   String get workshopErrorGeneric => '没有成功，稍后再试。';
 
   @override
-  String get workshopDisclosureTitle => '让工坊核对你的论坛身份';
+  String get workshopDisclosureTitle => '让工坊核对你的 GitHub 身份';
 
   @override
-  String get workshopDisclosureLead => '投稿、管理自己的投稿和举报，工坊都要先知道你是谁。办法是把你的论坛登录凭据（User API Key）发给下面这个工坊服务，由它去问论坛你是哪个账号。';
+  String get workshopDisclosureLead => '投稿、管理自己的投稿和举报，工坊都要先知道你是谁。办法是把你的 GitHub 登录凭据发给下面这个工坊服务，由它去问 GitHub 你是哪个账号。';
 
   @override
   String get workshopDisclosureWorker => '收到凭据的工坊';
 
   @override
-  String get workshopDisclosureForum => '核对身份的论坛';
+  String get workshopDisclosureAccount => '核对身份的账号服务';
 
   @override
-  String get workshopDisclosureUse => '投稿、查看或撤回自己的投稿、举报时都会带上它。工坊只拿它向论坛确认身份，不保存。';
+  String get workshopDisclosureUse => '投稿、查看或撤回自己的投稿、举报时都会带上它。工坊只拿它向 GitHub 确认身份，不保存。';
 
   @override
-  String get workshopDisclosureKept => '本机只记下你同意过这两个地址，不另存凭据；换了其中一个会再问。';
+  String get workshopDisclosureKept => '凭据只存在这台手机上，本机另外记下你同意过这两个地址；换了其中一个会再问。';
 
   @override
   String get workshopDisclosureStale => '地址刚刚有变化，请按现在显示的重新确认。';
@@ -24808,6 +24869,56 @@ class L10nZh extends L10n {
 
   @override
   String get workshopDisclosureUnsaved => '这次同意已经生效，但没能记在本机，下次可能再问一遍。';
+
+  @override
+  String get workshopSignInTitle => '用 GitHub 登录';
+
+  @override
+  String get workshopSignInLead => '工坊用 GitHub 账号认人。这次授权只能读你的公开资料（用户名和账号编号），不能动你的仓库。';
+
+  @override
+  String get workshopSignInPreparing => '正在向 GitHub 要验证码…';
+
+  @override
+  String get workshopSignInSteps => '在 GitHub 验证页输入验证码并授权，再回到这里。';
+
+  @override
+  String get workshopSignInOpen => '复制并打开 GitHub';
+
+  @override
+  String get workshopSignInCopied => '验证码已复制';
+
+  @override
+  String get workshopSignInWaiting => '等你在 GitHub 上授权…';
+
+  @override
+  String get workshopSignInExpired => '验证码过期了。';
+
+  @override
+  String get workshopSignInDenied => '你在 GitHub 上取消了授权。';
+
+  @override
+  String get workshopSignInNetwork => '连不上 GitHub，检查网络后再试。';
+
+  @override
+  String get workshopSignInUnconfigured => '这个工坊还没开通 GitHub 登录。';
+
+  @override
+  String get workshopSignInAgain => '重新获取验证码';
+
+  @override
+  String workshopAccountLine(String login) {
+    return 'GitHub 账号 $login';
+  }
+
+  @override
+  String get workshopAccountSignOut => '退出登录';
+
+  @override
+  String get workshopAccountSignedOut => '已退出。要彻底收回授权，去 GitHub 设置里的 Applications 页撤销。';
+
+  @override
+  String get workshopAccountSignOutFailed => '没能退出，稍后再试。';
 
   @override
   String get workshopInstalledEmptyTitle => '还没有从工坊装过东西';
@@ -24949,7 +25060,7 @@ class L10nZh extends L10n {
   String get workshopMinePublishHint => '审核通过后出现在「发现」里';
 
   @override
-  String get workshopMineSignInTitle => '投稿记在论坛账号上';
+  String get workshopMineSignInTitle => '投稿记在 GitHub 账号上';
 
   @override
   String get workshopMineSignInMessage => '登录后就能看到自己发过的作品。';
@@ -24958,7 +25069,7 @@ class L10nZh extends L10n {
   String get workshopMineConsentTitle => '还差一步确认';
 
   @override
-  String get workshopMineConsentMessage => '工坊要用你的论坛登录凭据核对身份，同意后才能看到自己的投稿。';
+  String get workshopMineConsentMessage => '工坊要用你的 GitHub 登录凭据核对身份，同意后才能看到自己的投稿。';
 
   @override
   String get workshopMineConsentAction => '查看说明';
@@ -25111,13 +25222,13 @@ class L10nZh extends L10n {
   String get workshopReportDone => '举报已送达，审核员会查看。';
 
   @override
-  String get workshopReportSignInTitle => '举报需要论坛账号';
+  String get workshopReportSignInTitle => '举报需要 GitHub 账号';
 
   @override
   String get workshopReportSignInMessage => '登录后才能提交举报。';
 
   @override
-  String get workshopReportConsentMessage => '工坊要用你的论坛登录凭据核对身份，同意后才能举报。';
+  String get workshopReportConsentMessage => '工坊要用你的 GitHub 登录凭据核对身份，同意后才能举报。';
 
   @override
   String get workshopReportUnknownTitle => '不确定有没有送达';
@@ -25143,13 +25254,13 @@ class L10nZh extends L10n {
   String get workshopPublishClosedMessage => '已经交上去的仍然可以在「我的投稿」里看。';
 
   @override
-  String get workshopPublishSignInTitle => '先登录论坛账号';
+  String get workshopPublishSignInTitle => '先登录 GitHub 账号';
 
   @override
-  String get workshopPublishSignInMessage => '工坊靠论坛账号确认投稿的人是谁。';
+  String get workshopPublishSignInMessage => '工坊靠 GitHub 账号确认投稿的人是谁。';
 
   @override
-  String get workshopPublishProfileTitle => '还没读到论坛账号资料';
+  String get workshopPublishProfileTitle => '还没读到 GitHub 账号资料';
 
   @override
   String get workshopPublishProfileMessage => '要先知道你是哪个账号，才能投稿。';
@@ -25445,13 +25556,13 @@ class L10nZh extends L10n {
   String get workshopPublishLetGoTitle => '放下本机的这条记录？';
 
   @override
-  String workshopPublishLetGoAccount(String forum, String worker) {
-    return '只删除这台手机上，论坛 $forum 的账号在工坊 $worker 的这条未完成记录。';
+  String workshopPublishLetGoAccount(String worker) {
+    return '只删除这台手机上，这个 GitHub 账号在工坊 $worker 的这条未完成记录。';
   }
 
   @override
-  String workshopPublishLetGoAll(String forum, String worker) {
-    return '这台手机上的投稿记录整体读不出来了。放下会清掉本机所有账号的未完成投稿记录，不只是论坛 $forum 在工坊 $worker 的这一条。';
+  String workshopPublishLetGoAll(String worker) {
+    return '这台手机上的投稿记录整体读不出来了。放下会清掉本机所有账号的未完成投稿记录，不只是这个 GitHub 账号在工坊 $worker 的这一条。';
   }
 
   @override
