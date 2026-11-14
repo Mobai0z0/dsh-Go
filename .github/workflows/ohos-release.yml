@@ -29,6 +29,10 @@ on:
         description: 'Build only, publish nothing'
         type: boolean
         default: false
+      aot_run_id:
+        description: 'Reuse the libapp.so from an earlier run instead of compiling again (that run must have a successful aot job)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -164,7 +168,9 @@ jobs:
     # `!failure()` rather than `needs.sync.result == 'success'`: a sync that had
     # nothing to do (not a fork) skips its jobs, and that must not block the
     # build. A sync that actually failed still stops it.
-    if: needs.detect.outputs.publish == 'true' && !failure() && !cancelled()
+    # `aot_run_id` reuses an earlier compile so iterating on the HAP packaging
+    # does not cost an hour every time.
+    if: needs.detect.outputs.publish == 'true' && !failure() && !cancelled() && inputs.aot_run_id == ''
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -333,6 +339,8 @@ jobs:
         with:
           name: ohos-aot
           path: aot
+          run-id: ${{ inputs.aot_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - if: steps.toolchain.outputs.found == 'true'
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -439,11 +447,24 @@ jobs:
           set -euo pipefail
           JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
           export JAVA_HOME
-          tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --work "$PWD/work" \
-            --aot "$PWD/aot" \
-            --native "$NATIVE_DIR" \
-            --runtime "$PWD/natives/dsh-runtime.zip" \
-            --node-headers "$PWD/node-v$NODE_VERSION/src"
+          log="$RUNNER_TEMP/hap.log"
+          if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --work "$PWD/work" \
+              --aot "$PWD/aot" \
+              --native "$NATIVE_DIR" \
+              --runtime "$PWD/natives/dsh-runtime.zip" \
+              --node-headers "$PWD/node-v$NODE_VERSION/src" >"$log" 2>&1; then
+            tail -n 60 "$log"
+            diag=""
+            if [ -f work/diagnostics.txt ]; then
+              echo "=== diagnostics.txt ==="
+              head -n 40 work/diagnostics.txt
+              diag="$(head -n 12 work/diagnostics.txt | cut -c1-100 | tr '\n' ';' || true)"
+            fi
+            end="$(tail -n 5 "$log" | cut -c1-150 | tr '\n' ';' || true)"
+            echo "::error::check-arkts failed: ${diag:0:480} | end: ${end:0:400}"
+            exit 1
+          fi
+          tail -n 20 "$log"
 
       - name: Keep the HAP
         if: steps.toolchain.outputs.found == 'true'
@@ -461,7 +482,7 @@ jobs:
   # but a skipped or failed HAP does not stop the release (always()).
   publish:
     needs: [detect, aot, hap]
-    if: always() && needs.detect.outputs.publish == 'true' && needs.aot.result == 'success' && inputs.dry_run != true
+    if: always() && needs.detect.outputs.publish == 'true' && (needs.aot.result == 'success' || needs.aot.result == 'skipped') && inputs.dry_run != true
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -475,6 +496,8 @@ jobs:
         with:
           name: ohos-aot
           path: dist/aot
+          run-id: ${{ inputs.aot_run_id || github.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download the HAP if this run built one
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -494,7 +517,7 @@ jobs:
           test -n "$lib" || { echo "The AOT bundle has no libapp.so"; exit 1; }
           # One stable artifact name; the version lives in the release, not the file.
           cp "$lib" "dist/dsh-go-$VERSION-ohos-arm64-libapp.so"
-          hap="$(find dist/hap -name '*.hap' 2>/dev/null | head -1)"
+          hap="$(find dist/hap -name '*.hap' -type f 2>/dev/null | head -1 || true)"
           if [ -n "$hap" ]; then
             cp "$hap" "dist/dsh-go-$VERSION-ohos-arm64-unsigned.hap"
             echo "HAP attached: $(basename "$hap")" >> "$GITHUB_STEP_SUMMARY"
