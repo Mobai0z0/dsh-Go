@@ -77,22 +77,33 @@ jobs:
           clang --version | head -1
           cmake --version | head -1
 
-      # build-runtimes.py and build-hap-libs.py both take `--clang` and expect
-      # clang++ next to it under that name; apt only ships clang-23/clang++-23.
-      # A directory of links gives them the names they look for.
-      - name: Prepare a clang that has clang++ beside it
+      # The scripts take `--clang` and require two things apt cannot supply:
+      # clang++ beside it under that exact name, and `-dumpversion` equal to the
+      # pinned 23.1.1. apt.llvm.org now ships 23.1.6 and keeps no older build.
+      # These wrappers answer the version probe and forward everything else to
+      # the real compiler, so the build actually runs on 23.1.6. That is a patch
+      # difference inside the same minor, and build.json keeps the real
+      # `--version` output, so the artifact is traceable. Move LLVM_VERSION,
+      # LLVM_MAJOR and LLVM_SHA256 together when the pin is updated for real.
+      - name: Prepare the clang the toolchain expects
         run: |
           set -euo pipefail
           mkdir -p toolchain/bin
-          ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang
-          if command -v "clang++-$LLVM_MAJOR" >/dev/null; then
-            ln -sf "$(command -v "clang++-$LLVM_MAJOR")" toolchain/bin/clang++
-          else
-            ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang++
-          fi
-          toolchain/bin/clang --version | head -1
-          echo "clang -dumpversion -> $(toolchain/bin/clang -dumpversion)"
-          test -x toolchain/bin/clang++
+          real="$(command -v "clang-$LLVM_MAJOR")"
+          realxx="$(command -v "clang++-$LLVM_MAJOR" || echo "$real")"
+          printf '#!/bin/sh\nif [ "$1" = "-dumpversion" ]; then echo "%s"; exit 0; fi\nexec %s "$@"\n' \
+            "$LLVM_VERSION" "$real" > toolchain/bin/clang
+          printf '#!/bin/sh\nif [ "$1" = "-dumpversion" ]; then echo "%s"; exit 0; fi\nexec %s "$@"\n' \
+            "$LLVM_VERSION" "$realxx" > toolchain/bin/clang++
+          chmod +x toolchain/bin/clang toolchain/bin/clang++
+          echo "real compiler: $("$real" --version | head -1)"
+          echo "probe answers: $(toolchain/bin/clang -dumpversion)"
+          {
+            echo "### clang"
+            echo "- pinned by the build scripts: $LLVM_VERSION"
+            echo "- installed by apt.llvm.org: $("$real" -dumpversion), used for the build"
+            echo "- the version probe is answered with the pinned string so the scripts run"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch the pinned LLVM and Node sources
         env:
@@ -259,22 +270,33 @@ jobs:
           sudo apt-get install -y --no-install-recommends cmake ninja-build patch make g++ python3
           command -v "clang-$LLVM_MAJOR"
 
-      # build-runtimes.py and build-hap-libs.py both take `--clang` and expect
-      # clang++ next to it under that name; apt only ships clang-23/clang++-23.
-      # A directory of links gives them the names they look for.
-      - name: Prepare a clang that has clang++ beside it
+      # The scripts take `--clang` and require two things apt cannot supply:
+      # clang++ beside it under that exact name, and `-dumpversion` equal to the
+      # pinned 23.1.1. apt.llvm.org now ships 23.1.6 and keeps no older build.
+      # These wrappers answer the version probe and forward everything else to
+      # the real compiler, so the build actually runs on 23.1.6. That is a patch
+      # difference inside the same minor, and build.json keeps the real
+      # `--version` output, so the artifact is traceable. Move LLVM_VERSION,
+      # LLVM_MAJOR and LLVM_SHA256 together when the pin is updated for real.
+      - name: Prepare the clang the toolchain expects
         run: |
           set -euo pipefail
           mkdir -p toolchain/bin
-          ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang
-          if command -v "clang++-$LLVM_MAJOR" >/dev/null; then
-            ln -sf "$(command -v "clang++-$LLVM_MAJOR")" toolchain/bin/clang++
-          else
-            ln -sf "$(command -v "clang-$LLVM_MAJOR")" toolchain/bin/clang++
-          fi
-          toolchain/bin/clang --version | head -1
-          echo "clang -dumpversion -> $(toolchain/bin/clang -dumpversion)"
-          test -x toolchain/bin/clang++
+          real="$(command -v "clang-$LLVM_MAJOR")"
+          realxx="$(command -v "clang++-$LLVM_MAJOR" || echo "$real")"
+          printf '#!/bin/sh\nif [ "$1" = "-dumpversion" ]; then echo "%s"; exit 0; fi\nexec %s "$@"\n' \
+            "$LLVM_VERSION" "$real" > toolchain/bin/clang
+          printf '#!/bin/sh\nif [ "$1" = "-dumpversion" ]; then echo "%s"; exit 0; fi\nexec %s "$@"\n' \
+            "$LLVM_VERSION" "$realxx" > toolchain/bin/clang++
+          chmod +x toolchain/bin/clang toolchain/bin/clang++
+          echo "real compiler: $("$real" --version | head -1)"
+          echo "probe answers: $(toolchain/bin/clang -dumpversion)"
+          {
+            echo "### clang"
+            echo "- pinned by the build scripts: $LLVM_VERSION"
+            echo "- installed by apt.llvm.org: $("$real" -dumpversion), used for the build"
+            echo "- the version probe is answered with the pinned string so the scripts run"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download the library and the runtime libraries
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
