@@ -36,6 +36,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # `inputs` only exists for workflow_dispatch; a push to this file leaves it
+  # empty, so every use goes through these defaults instead.
+  NODE_VERSION: ${{ inputs.node_version || '24.22.1' }}
+  JOBS: ${{ inputs.jobs || '4' }}
   LLVM_VERSION: 23.1.1
   # apt.llvm.org takes the major version only.
   LLVM_MAJOR: '23'
@@ -64,7 +68,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ inputs.node_version }}
+          node-version: ${{ env.NODE_VERSION }}
 
       # BUILD.md: the target code must be built by host clang 23.1.1 with its
       # own static libc++; the SDK's clang 15 cannot compile Node 24.
@@ -112,8 +116,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch the pinned LLVM and Node sources
-        env:
-          NODE_VERSION: ${{ inputs.node_version }}
         run: |
           set -euo pipefail
           mkdir -p src
@@ -206,7 +208,7 @@ jobs:
               --source-archive "$PWD/src/llvm.tar.xz" \
               --work "$PWD/work-runtimes" \
               --output "$PWD/ohos-llvm-runtimes" \
-              --jobs "${{ inputs.jobs }}" >"$log" 2>&1; then
+              --jobs "${{ env.JOBS }}" >"$log" 2>&1; then
             tail -n 40 "$log"
             # cmake writes the compiler-probe failures here; that is where the
             # real reason is when configure aborts.
@@ -235,8 +237,6 @@ jobs:
           key: ${{ steps.runtimes.outputs.cache-primary-key }}
 
       - name: Cross-compile Node
-        env:
-          NODE_VERSION: ${{ inputs.node_version }}
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/node.log"
@@ -248,7 +248,7 @@ jobs:
               --host-node "$(command -v node)" \
               --work "$PWD/work-node" \
               --output "$PWD/ohos-node-artifacts" \
-              --jobs "${{ inputs.jobs }}" >"$log" 2>&1; then
+              --jobs "${{ env.JOBS }}" >"$log" 2>&1; then
             tail -n 60 "$log"
             make_err=""
             for f in $(find work-node -maxdepth 3 \( -name make.log -o -name configure.log \) 2>/dev/null | head -2); do
@@ -271,9 +271,9 @@ jobs:
             echo
             echo "| item | value |"
             echo "|---|---|"
-            echo "| Node | ${{ inputs.node_version }} |"
+            echo "| Node | ${{ env.NODE_VERSION }} |"
             echo "| LLVM | $LLVM_VERSION |"
-            echo "| jobs | ${{ inputs.jobs }} |"
+            echo "| jobs | ${{ env.JOBS }} |"
             ls -l ohos-node-artifacts 2>/dev/null | tail -5
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -317,7 +317,7 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ inputs.node_version }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install clang and the build tools
         run: |
@@ -401,8 +401,6 @@ jobs:
       # The addon sources are pinned in the repository, so both the URL and the
       # digest are read from there instead of being copied into this file.
       - name: Fetch the pinned addon sources
-        env:
-          NODE_VERSION: ${{ inputs.node_version }}
         run: |
           set -euo pipefail
           mkdir -p sources
