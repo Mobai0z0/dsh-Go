@@ -304,7 +304,9 @@ jobs:
   # carries the AOT bundle. That is why this job is continue-on-error.
   hap:
     needs: [detect, aot]
-    if: needs.detect.outputs.publish == 'true'
+    # `always()` so a reused AOT (aot skipped) still packages a HAP; a real
+    # failure upstream still stops it.
+    if: always() && needs.detect.outputs.publish == 'true' && !failure() && !cancelled()
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     continue-on-error: true
@@ -543,9 +545,18 @@ jobs:
           upstream_body="$(gh api "repos/$UPSTREAM_REPO/releases/tags/$UPSTREAM_TAG" --jq '.body // ""' || echo '')"
           hap="dist/dsh-go-$VERSION-ohos-arm64-unsigned.hap"
           {
-            # The upstream notes are the notes. This fork adds a header line so
-            # the version can be traced back, and its own artifact list at the
-            # end; nothing in between is rewritten.
+            # The upstream notes stay verbatim, but a reader must not mistake
+            # this for the Android build: the changelog talks about APKs,
+            # stores and installers that do not exist here.
+            echo "> **这是鸿蒙（HarmonyOS / OpenHarmony）构建，不是 Android 版本。**"
+            echo "> 产物只有 \`libapp.so\`、可选的未签名 HAP 和 \`SHA256SUMS\`，**没有 APK**。"
+            echo "> 下面沿用上游那一版的更新日志，其中提到的安装包、应用商店、覆盖安装等都属 Android 版。"
+            echo ">"
+            echo "> **This is the HarmonyOS build, not the Android one.** It ships \`libapp.so\`, an"
+            echo "> optional unsigned HAP and \`SHA256SUMS\`; there is no APK. The notes below are the"
+            echo "> upstream changelog, so anything it says about APKs, stores or reinstalling applies"
+            echo "> to the Android app."
+            echo
             echo "对应上游版本 / Upstream release: [\`$UPSTREAM_TAG\`]($upstream_url)"
             echo
             if [ -n "$upstream_body" ]; then
