@@ -102,7 +102,10 @@ jobs:
             echo "$out" >&2
             exit 1
           fi
-          echo "$out" >&2
+          # Unknown failure: the API's own message is the diagnosis, so surface
+          # it as an annotation instead of losing it to stderr.
+          echo "::error::merge-upstream failed: $(printf '%s' "$out" | tail -n 6 | cut -c1-200 | tr '
+' ';')"
           exit 1
 
   # Branches other than the default one. GitHub's merge-upstream only handles
