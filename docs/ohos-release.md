@@ -106,15 +106,18 @@ gh release create ohos-toolchain --repo <owner>/<repo> \
 
 不需要任何 secret。
 
+> 例外：发版流程开头的同步会用到 `SYNC_TOKEN`（见下方「一次性设置」）。发版本身不需要。
+
 ## 一次性设置
 
 要 HAP 一共三步；不要 HAP 只做前两步。
 
 1. **Settings → Actions → General → Workflow permissions** 选 **Read and write** —— 建 release、推同步分支都要它；设成只读两个 workflow 都会失败。
-2. 打开 **Actions** 页，把被禁用的 workflow 启用（新建的 fork 默认不跑定时任务）。
-3. **上传一次原生库**到 `ohos-toolchain` release，见上面「一次性准备原生库」。不做这步就只有 AOT，没有 HAP。
+2. 加仓库 secret **`SYNC_TOKEN`**：classic PAT 勾 `repo` + `workflow`，或 fine-grained PAT 给 Contents、Workflows 两项 Write（[FORK.md](../FORK.md) 有同样一条）。上游一改 `.github/workflows/*`，同步只能用这个令牌写过去；`GITHUB_TOKEN` 无论如何都写不了。
+3. 打开 **Actions** 页，把被禁用的 workflow 启用（新建的 fork 默认不跑定时任务）。
+4. **上传一次原生库**到 `ohos-toolchain` release，见上面「一次性准备原生库」。不做这步就只有 AOT，没有 HAP。
 
-仓库变量**一个都不用配**：`OHOS_REF`、`OHOS_UPSTREAM_REPO`、`SYNC_BRANCHES`、SDK 地址全有默认值；也不需要任何 secret。
+仓库变量**一个都不用配**：`OHOS_REF`、`OHOS_UPSTREAM_REPO`、`SYNC_BRANCHES`、SDK 地址全有默认值；除了同步用的 `SYNC_TOKEN`，也不需要任何 secret。
 
 ## 之后会发生什么（不需要你操作）
 

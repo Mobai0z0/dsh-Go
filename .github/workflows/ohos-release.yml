@@ -160,6 +160,10 @@ jobs:
     needs: detect
     if: needs.detect.outputs.publish == 'true'
     uses: ./.github/workflows/sync-upstream.yml
+    # A called workflow starts with no secrets of its own; SYNC_TOKEN has to be
+    # handed over or the release path syncs with GITHUB_TOKEN and hits the
+    # workflows-permission wall the standalone sync avoids.
+    secrets: inherit
 
   # The Dart half of the HAP, on the runner that has oh-flutter's AOT tools.
   # Same steps as ci's OHOS compile job, from the same pinned SDK commit.

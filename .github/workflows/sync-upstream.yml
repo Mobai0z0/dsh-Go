@@ -79,7 +79,14 @@ jobs:
       - name: Merge upstream into the default branch
         if: steps.resolve.outputs.fork == 'true' && steps.resolve.outputs.upstream != ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN is a GitHub App token and may never write
+          # `.github/workflows/*`, so a merge that carries upstream's workflow
+          # changes dies with "refusing to allow a GitHub App to create or
+          # update workflow". Only a PAT can hold that permission (classic:
+          # `workflow` scope, fine-grained: Workflows write), so it wins here
+          # when the secret exists. It has to be forwarded by callers: see
+          # `secrets: inherit` in ohos-release.yml.
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
@@ -102,6 +109,15 @@ jobs:
             echo "$out" >&2
             exit 1
           fi
+          # Upstream changed a workflow file and the token is GITHUB_TOKEN: this
+          # is a permission wall, not a merge problem, and retrying never helps.
+          if printf '%s' "$out" | grep -qiE 'without .workflows. permission'; then
+            echo "::error::$BRANCH cannot merge: the token may not write .github/workflows/*."
+            echo "  GITHUB_TOKEN never can. Add a repository secret SYNC_TOKEN holding a PAT with"
+            echo "  the workflow scope (classic 'workflow', or fine-grained Workflows: write)."
+            echo "$out" >&2
+            exit 1
+          fi
           # Unknown failure: the API's own message is the diagnosis, so surface
           # it as an annotation instead of losing it to stderr.
           echo "::error::merge-upstream failed: $(printf '%s' "$out" | tail -n 6 | cut -c1-200 | tr '\n' ';' || true)"
@@ -117,7 +133,9 @@ jobs:
     steps:
       - name: Fast-forward the configured branches
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same rule as the default branch: pushing upstream's commits means
+          # pushing whatever workflow files they carry, and GITHUB_TOKEN cannot.
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
           UPSTREAM_REPO: ${{ needs.default-branch.outputs.upstream }}
           BRANCHES_INPUT: ${{ inputs.branches }}
           BRANCHES_VAR: ${{ vars.SYNC_BRANCHES }}

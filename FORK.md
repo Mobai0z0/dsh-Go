@@ -34,6 +34,7 @@ gh api --method POST repos/<owner>/<repo>/merge-upstream -f branch=main
 ## 需要的仓库设置（只做一次）
 
 - **Settings → Actions → General → Workflow permissions** 选 **Read and write**，否则同步和发版都建不了东西。
+- 加一个仓库 secret **`SYNC_TOKEN`**：classic PAT 勾 `repo` + `workflow`，或 fine-grained PAT 给 Contents、Workflows 两项 Write。上游一改 `.github/workflows/*`，同步就会用到它——`GITHUB_TOKEN` 是 GitHub App 令牌，**永远**没有写 workflow 文件的权限，不加这个 secret 同步会卡在 `refusing to allow a GitHub App to create or update workflow`。缺这个 secret 时同步仍按 `GITHUB_TOKEN` 跑，只是碰到 workflow 改动就会失败。
 - 在 **Actions** 页启用 workflow（新建的 fork 默认不跑定时任务）。
 - 仓库变量一个都不用配，全有默认值：`SYNC_UPSTREAM_REPO`、`SYNC_BRANCHES`（默认 `claude/harmonyos-ohos`）、`OHOS_REF`、`OHOS_UPSTREAM_REPO`。只有要 CI 打 HAP 时才需要 `OHOS_HAP_BUILD`、`OHOS_NATIVES_URL` 和两个 secrets，见 [docs/ohos-release.md](docs/ohos-release.md)。
 
@@ -51,7 +52,8 @@ This is a fork of [ccch1mneyyy/dsh-go](https://github.com/ccch1mneyyy/dsh-go) fo
 - **No upstream file is edited**: `main` only *adds* files (this one, the two workflows, `docs/ohos-release.md`). Upstream's own files are left untouched, so a sync cannot conflict — upstream README and `docs/release.md` changes merge in as usual.
 - **External PRs**: not accepted, same policy as upstream ([AGENTS.md](AGENTS.md)).
 - **Releases**: only `ohos-*` GitHub Releases, no Android APK. APKs come from the upstream release machine; HarmonyOS releases are built by `.github/workflows/ohos-release.yml` after an upstream release, see [docs/ohos-release.md](docs/ohos-release.md). The notes are the upstream changelog copied verbatim, with this fork's artifact list appended.
-- **Set up once**: Workflow permissions **Read and write**, and enable the workflows on the Actions page. No repository variables are needed — all have defaults. After that, an upstream release is synced, built and published within 6 hours without any button.
+- **Set up once**: Workflow permissions **Read and write**, a `SYNC_TOKEN` secret, and enable the workflows on the Actions page. No repository variables are needed — all have defaults. After that, an upstream release is synced, built and published within 6 hours without any button.
+- **Why `SYNC_TOKEN`**: `GITHUB_TOKEN` is a GitHub App token and never holds permission to write `.github/workflows/*`, so the first sync that carries an upstream workflow change fails with `refusing to allow a GitHub App to create or update workflow`. The secret must be a PAT — classic with `repo` + `workflow`, or fine-grained with Contents and Workflows write. Without it the sync still runs on `GITHUB_TOKEN` and only fails when a workflow file changed.
 - **Artifacts**: the Dart AOT half (`libapp.so`), plus an **unsigned** HAP (`dsh-go-<version>-ohos-arm64-unsigned.hap`) once the native libraries have been uploaded to the `ohos-toolchain` release. Without that upload only the AOT ships, and nothing fails.
 - **Manual sync**: the repository page's **Sync fork** button, `gh api --method POST repos/<owner>/<repo>/merge-upstream -f branch=main`, or **Actions → Sync upstream → Run workflow**.
 - **Required setting**: **Settings → Actions → General → Workflow permissions** must be **Read and write**.
