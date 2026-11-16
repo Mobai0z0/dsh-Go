@@ -100,9 +100,6 @@ DIAGNOSTIC_EDITS = {
     'node_modules/@deepseek-ai/dsh-tool-bash/lib/index.js': (
         ('鸿蒙本机使用虚拟 shell', 'iOS 本机使用虚拟 shell'),
     ),
-    'node_modules/@deepseek-ai/dsh-mcp-client/lib/index.js': (
-        ('鸿蒙本机不支持 stdio MCP 子进程', 'iOS 本机不支持 stdio MCP 子进程'),
-    ),
     'node_modules/@deepseek-ai/dsh-skill-office/lib/index.js': (
         ('鸿蒙本机不提供 LibreOffice 转换、重算或渲染运行时', 'iOS 本机不提供 LibreOffice 转换、重算或渲染运行时'),
     ),
@@ -171,6 +168,12 @@ def attachments_for_ios(original):
         if text.count(before) != 1:
             raise ValueError('iOS attachment edit differs from the composed store: ' + before[:60])
         text = text.replace(before, after)
+    # Node reports OpenHarmony on iOS for the shared command/runtime layer, but
+    # this artifact uses the ImageIO-backed ios-sharp shim for image operations.
+    image_gate = 'process.platform === "openharmony"'
+    if text.count(image_gate) != 12:
+        raise ValueError('iOS image routes differ from the composed store')
+    text = text.replace(image_gate, 'false')
     return text.encode()
 
 
