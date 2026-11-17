@@ -32,13 +32,22 @@ sha256: 010683db6c73b3ad1c334fc8f93f64ae748ef67ae6d69e964929aeaf8517bff3
 构建沿用既有 `mke2fs` 和 Python 标准库，不在App里执行构建命令，也不新增 npm 或其他第三方依赖。
 
 ```sh
+# 0. 下载 APK 与 Alpine/diskimage，逐件核 SHA（公开固定输入）
+python3 -I -B tooling/ohos/research/linux-job/prepare-inputs.py \
+  --out /inputs/linux-inputs --alpine-mirror https://repo.huaweicloud.com/alpine
+# 1. 展开 Alpine + 31 个固定 APK，产出干净的 tools-root（无测试 fixture）
+python3 -I -B tooling/ohos/build-linux-tools-root.py \
+  --inputs /inputs/linux-inputs --output /outputs/linux-tools
+# 2. 组装六件资产
 python3 -I -B tooling/ohos/build-linux-assets.py \
-  --diskimage /inputs/diskimage-linux-riscv-2018-09-23.tar.gz \
-  --alpine /inputs/alpine-minirootfs-3.24.4-riscv64.tar.gz \
-  --tools-root /inputs/approved-tools-root \
+  --diskimage /inputs/linux-inputs/diskimage-linux-riscv-2018-09-23.tar.gz \
+  --alpine /inputs/linux-inputs/alpine-minirootfs-3.24.4-riscv64.tar.gz \
+  --tools-root /outputs/linux-tools/root \
   --agent runtime/ohos/linux/guest-agent.py \
   --output /outputs/linux-images
 ```
+
+`OHOS toolchain · runtime` workflow 已按这三步自行构建资产并传给 compose，无需手工准备 `/inputs/approved-tools-root`。
 
 脚本固定核Bellard归档、Alpine归档和当前guest-agent的SHA，保留 `image/` 和 `BUILD.json` 供诊断；成功新增的 `assets/` 只有六件。两个512MiB未压缩ext4中间盘留在 `image/`，不进入运行时/HAP。发布资产先写本次私有暂存目录，经实际字节校验后rename；已存在的目标不覆盖，失败删除本次暂存。它是构建机发布步骤，不承诺掉电持久性。
 

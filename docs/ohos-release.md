@@ -62,6 +62,7 @@
 | `libapp.so` + `flutter_assets` | 上一个 job（macOS 编译）的产物 |
 | Node 头文件 | 自动下载 `node-v24.22.1.tar.gz` |
 | `libsqlite3.so` | 自动构建：SQLite amalgamation 从 sqlite.org 取（按 `build-sqlite.py` 钉住的 sha256），`sqlite3` 包源码从 pub.dev 取（版本必须等于 `app/pubspec.lock`），用 SDK 自带的 clang 编成 OH 版本 |
+| `libdsh_linux.so` | 自动构建：固定 TinyEMU 源码（bellard.org，按仓库钉住的 sha256）经 `runtime/ohos/linux/native/CMakeLists.txt`，用 SDK 自带的 clang、已下载的 Node 头文件和 `hap-libs.zip` 里的 `libnode.so` 编成 OH 版本。App 的 Linux 环境开关需要它；没有它就算 runtime 有镜像也开不起来 |
 | **`libnode.so`、`libdsh_flock.so`、`libdsh_require_builtin.so`、`dsh-runtime.zip`** | **要你上传一次**，见下 |
 
 原生库不能自动生成：`runtime/ohos/native/build-hap-libs.py` 需要先自建 clang（`build-runtimes.py`）再交叉编译整个 Node 24（`build-node.py`），耗时以小时计，放进每次发版不现实。所以它放在本仓库一个固定的 `ohos-toolchain` release 里，CI 每次直接取。
@@ -98,6 +99,8 @@ gh release create ohos-toolchain --repo <owner>/<repo> \
 ```
 
 具体参数（`--sdk-native`、`--clang`、`--cxx-runtime`、`--libnode-output`、`--node-source` 等）见 `runtime/ohos/native/build-hap-libs.py --help` 和 `app/ohos/README.md`。
+
+`dsh-runtime.zip` 现在还含 App 内 Linux 环境的 6 件镜像资产。`OHOS toolchain · runtime` 这个 workflow 自己从公开固定输入（bellard.org 的 diskimage、华为源的 Alpine 3.24.4、31 个 SHA 钉死的 APK）构建 `tools-root` 和镜像，再以 `compose-runtime.py --linux-assets` 纳入同一个受校验的 runtime。手动按上面重做 runtime 时也要传 `--linux-assets`，否则出来的包里 Linux 环境会显示"暂不可用"；构建步骤见 `runtime/ohos/package/LINUX-ASSETS.zh.md`。`hap-libs.zip` 不必含 `libdsh_linux.so`——它在打 HAP 时由 release job 用固定 TinyEMU 源码单独构建。
 
 **约定**：tag 固定 `ohos-toolchain`，资产名固定 `hap-libs.zip`（zip 里含 `libnode.so` 即可，有没有外层 `arm64-v8a/` 目录都行）和 `dsh-runtime.zip`。tag 或名字不一致，CI 就找不到。
 

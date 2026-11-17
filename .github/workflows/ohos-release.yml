@@ -482,6 +482,40 @@ jobs:
           tar -xzf node.tar.gz "node-v$NODE_VERSION/src"
           rm -f node.tar.gz
 
+      # The in-app Linux environment needs libdsh_linux.so in the HAP's native
+      # set. It is not in the one-off hap-libs.zip (that set predates it). The
+      # OH SDK, node headers and renamed libnode.so are already here; only the
+      # fixed TinyEMU archive is missing, so build this one library from it.
+      # The CMake path is the same one build-hap-libs.py uses with
+      # --tinyemu-source; no glibc host artifacts enter the HAP.
+      - name: Build the HAP's libdsh_linux.so
+        if: steps.toolchain.outputs.found == 'true'
+        env:
+          TINYEMU_URL: https://bellard.org/tinyemu/tinyemu-2019-12-21.tar.gz
+          TINYEMU_SHA: be8351f2121819b3172fcedce5cb1826fa12c87da1b7ed98f269d3e802a05555
+        run: |
+          set -euo pipefail
+          command -v cmake ninja >/dev/null || {
+            echo "::error::cmake and ninja are required to build libdsh_linux.so"; exit 1; }
+          archive="$RUNNER_TEMP/tinyemu-2019-12-21.tar.gz"
+          curl -fSL --retry 3 --retry-delay 10 -o "$archive" "$TINYEMU_URL"
+          got="$(sha256sum "$archive" | cut -d' ' -f1)"
+          if [ "$got" != "$TINYEMU_SHA" ]; then
+            echo "::error::TinyEMU archive SHA is $got, expected $TINYEMU_SHA"; exit 1
+          fi
+          cmake -S runtime/ohos/linux/native -B "$RUNNER_TEMP/linux-native" -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$SDK_ROOT/native/build/cmake/ohos.toolchain.cmake" \
+            -DOHOS_ARCH=arm64-v8a \
+            -DDSH_TINYEMU_ARCHIVE="$archive" \
+            -DDSH_NODE_HEADERS="$PWD/node-v$NODE_VERSION/src" \
+            -DDSH_NODE_LIBRARY="$NATIVE_DIR/libnode.so" \
+            -DDSH_NODE_RENAME_HEADER="$PWD/runtime/ohos/node/napi-rename.h" \
+            -DDSH_OH_SDK_NATIVE="$SDK_ROOT/native"
+          ninja -C "$RUNNER_TEMP/linux-native"
+          cp "$RUNNER_TEMP/linux-native/generated-linux/libdsh_linux.so" "$NATIVE_DIR/"
+          "$SDK_ROOT/native/llvm/bin/llvm-strip" --strip-unneeded "$NATIVE_DIR/libdsh_linux.so"
+          ls -l "$NATIVE_DIR/libdsh_linux.so"
+
       # The AOT carries the sqlite3 package's native asset, and that copy is the
       # hook's glibc binary that HarmonyOS cannot load. Its OH build needs only
       # this SDK's clang, so it is built here instead of being uploaded with the
