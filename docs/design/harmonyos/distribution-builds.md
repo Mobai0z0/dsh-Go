@@ -44,6 +44,8 @@ tooling/ohos/check-arkts.sh --sdk <SDK> --full --aot <dir> --native <dir> --runt
 
 只临时改本次OHOS模块声明，正常/失败退出均恢复原module字节；Android文件和依赖图不变。debug/device添加`KEEP_BACKGROUND_RUNNING`、受限`KEEP_BACKGROUND_RUNNING_SYSTEM`、`READ_PASTEBOARD`，EntryAbility增加taskKeeping。store显式删除两项受限权限和taskKeeping，保留其他能力既有声明。不能靠修改manifest获得系统授权；没有对应权限时运行时应走既有短时任务或粘贴回退。
 
+`deviceTypes`也分两处：源码写`["phone", "tablet"]`（华为上架检测项要求`phone`，`default`虽然能编译但不支持上架）；`check-arkts.sh`的公开SDK编译只接受`default`，所以只在编译副本里改成`default`，HAP打完后再把成品`module.json`里的`default`还原成`phone`。`tooling/ohos/audit-hap.py`检查成品必须含`phone`，缺了算失败。版本号同理由打包脚本写入，不读源码或pubspec的`+N`占位，见[ohos-release.md](../../ohos-release.md)「版本与设备类型」。
+
 | 能力 | 不上架构建 | 上架构建/待裁决 | 尚需核实 |
 |---|---|---|---|
 | 长时后台AI回合 | 请求KEEP_BACKGROUND_RUNNING_SYSTEM，taskKeeping模式，通知可见 | 一键移除受限权限及taskKeeping；是否获正式ACL以后决定 | 手机支持、Profile授权、系统回收、通知及耗电 |

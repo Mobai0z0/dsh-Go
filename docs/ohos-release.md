@@ -23,14 +23,17 @@
 | `detect` | ubuntu | 选上游版本，判断这一版是否已经发过 |
 | `sync` | — | 调用 `.github/workflows/sync-upstream.yml`，先把上游代码和构建分支同步到最新 |
 | `aot` | macOS | 用 oh-flutter 3.47.9-ohos 编出 `libapp.so` |
-| `hap` | ubuntu | 可选，默认关闭；打 unsigned HAP，失败不影响发布 |
+| `hap` | ubuntu | 有 `ohos-toolchain` release 时打 **unsigned** HAP；失败不影响发布 |
 | `publish` | ubuntu | 唯一写入的 job：建 `ohos-<上游 tag>` release |
+
+**发版全程不签名**：不需要签名材料、不需要任何 secret 来签名，`check-arkts.sh` 也不传 `--distribution`，产物就是 `dsh-go-<版本>-ohos-arm64-unsigned.hap`。要装到手机上的签名由使用者自己做，不在这个 workflow 里。
 
 **顺序**：`detect` → `sync` → `aot` → `hap` → `publish`，靠 job 依赖固定，不是靠时间错开。
 
-- 发版前一定先同步：`aot` 检出的 `claude/harmonyos-ohos` 是 `sync` 刚快进过的提交，不会拿上一次定时同步留下的旧代码打包。
+- 发版前一定先同步：`aot` 检出的 `main` 是 `sync` 刚处理过的分支，不会拿上一次定时同步留下的旧代码打包。
 - 同步失败就停：`sync` 出错（比如 `main` 冲突）时 `aot` 不会跑，这一版直接不发 —— 发旧代码比红一次更糟。
 - 定时同步仍保留（每 6 小时），所以没发版的时候代码也在跟上游走；发版时那次同步通常已经没有新东西要拉。
+- 检出的是**代码分支**，版本号不跟它走：HAP 的 `versionName` 由 `--version` 写入（就是这一版的发布版本），见下面「版本与设备类型」。以前默认检出 `claude/harmonyos-ohos`，那个分支的 `pubspec.yaml` 停在 1.0.16，于是每一版打出来的 HAP 都报 1.0.16。
 
 ## 产物
 
@@ -61,6 +64,16 @@
 | **`libnode.so`、`libdsh_flock.so`、`libdsh_require_builtin.so`、`dsh-runtime.zip`** | **要你上传一次**，见下 |
 
 原生库不能自动生成：`runtime/ohos/native/build-hap-libs.py` 需要先自建 clang（`build-runtimes.py`）再交叉编译整个 Node 24（`build-node.py`），耗时以小时计，放进每次发版不现实。所以它放在本仓库一个固定的 `ohos-toolchain` release 里，CI 每次直接取。
+
+## 版本与设备类型
+
+版本和设备类型写在 `app/ohos/AppScope/app.json5` 和 `app/ohos/entry/src/main/module.json5` 里，但打包时会重写，只认下面这几条：
+
+| 项 | 谁写 | 规则 |
+|---|---|---|
+| `versionName` | `tooling/ohos/hap-version.py` | 发版时是 `--version <这一版>`（等于 release 名和资产名里的版本）；本地 `build-hap.sh` 用 `app/pubspec.yaml` 的版本 |
+| `versionCode` | 同上 | 由版本号算：`major*1000000 + minor*10000 + patch*100`（1.0.16 → 1001600，1.1.0 → 1010000，预发布再减 1 排在正式版之前）。**不能用 pubspec 的 `+N`**：那个占位一直是 1，系统只装 versionCode 比已装更高的包，等于每次都是同版本 |
+| `deviceTypes` | `check-arkts.sh` | 源码写 `["phone", "tablet"]`（上架要求，华为的检测项明确说 `default` 不支持上架）；但公开的 OpenHarmony SDK 只接受 `default`，所以编译时临时改成 `default`，HAP 打出来后把成品 `module.json` 里的 `default` 改回 `phone`。`audit-hap.py` 会检查成品里有没有 `phone`，缺了这次运行算失败 |
 
 ## 一次性准备原生库
 
@@ -99,7 +112,7 @@ gh release create ohos-toolchain --repo <owner>/<repo> \
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `OHOS_REF` | `claude/harmonyos-ohos` | 带 `app/ohos` 和 `tooling/ohos` 的分支；这些文件进了 `main` 之后改成 `main` |
+| `OHOS_REF` | `main` | 检出哪个分支来编译（`app/ohos` 和 `tooling/ohos` 已在 `main` 上）；改回旧分支会让 HAP 的代码和版本一起停在那个分支上 |
 | `OHOS_UPSTREAM_REPO` | `ccch1mneyyy/dsh-go` | 跟随的上游仓库 |
 | `OHOS_SDK_URL` | 华为云 7.0-Release 的 SDK 包 | 换 SDK 来源时用 |
 | `OHOS_SDK_SHA256` | 上面那个包的 sha256 | 换 SDK 来源时必须一起改 |
@@ -139,4 +152,4 @@ gh release create ohos-toolchain --repo <owner>/<repo> \
 
 ## 前置条件
 
-- 构建分支（默认 `claude/harmonyos-ohos`）由 `.github/workflows/sync-upstream.yml` 一起同步过来，见 [FORK.md](../FORK.md)；那个分支还没同步过来时，`aot` job 会因为找不到 `app/ohos` 而失败。
+- 构建用的是 `main`（`OHOS_REF` 可改）：`app/ohos` 和 `tooling/ohos` 已经在 `main` 上，`sync` 每 6 小时把上游合进来，发版前还会再同步一次。检出别的分支时，代码和 `pubspec.yaml` 的版本都会停在那个分支上。

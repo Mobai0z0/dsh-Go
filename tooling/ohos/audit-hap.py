@@ -191,6 +191,11 @@ def main():
     if mod.get('extractNativeLibs') is not True or mod.get('libIsolation') is not False:
         problems.append('module.json must say extractNativeLibs true and libIsolation false: '
                         'RuntimeController reads applicationInfo.nativeLibraryPath as a directory')
+    # A store publishes to "phone"; "default" is a build-time stand-in that no
+    # phone installs from a listing (Huawei's listing check rejects it alone).
+    if 'phone' not in mod['deviceTypes']:
+        problems.append(f'module.json declares deviceTypes {mod["deviceTypes"]}: a phone is missing '
+                        '(check-arkts.sh puts "phone" back after the OpenHarmony build)')
 
     # Layered icon, resolved by id for both the app and the ability.
     icons = {}

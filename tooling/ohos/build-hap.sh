@@ -75,6 +75,9 @@ cp pubspec.lock "$LOCK"
 MODULE=ohos/entry/src/main/module.json5
 MODULE_KEPT="$(mktemp)"
 cp "$MODULE" "$MODULE_KEPT"
+APP_JSON=ohos/AppScope/app.json5
+APP_JSON_KEPT="$(mktemp)"
+cp "$APP_JSON" "$APP_JSON_KEPT"
 ENGINE_HAR=""
 ENGINE_KEPT=""
 PREPARED=""
@@ -88,11 +91,17 @@ restore() {
   rmdir "$RAWFILE" 2>/dev/null || true
   cp "$MODULE_KEPT" "$MODULE"
   rm -f "$MODULE_KEPT"
+  cp "$APP_JSON_KEPT" "$APP_JSON"
+  rm -f "$APP_JSON_KEPT"
   cp "$LOCK" pubspec.lock
   rm -f "$LOCK"
 }
 trap restore EXIT
 python3 -I -B "$DISTRIBUTION_HELPER" permissions --distribution "$DISTRIBUTION" --input "$MODULE_KEPT" --output "$MODULE"
+# The version the phone shows and the store compares, from pubspec.yaml: the file's
+# own numbers are placeholders, and a system only installs a HAP whose versionCode
+# is higher than the installed one (tooling/ohos/hap-version.py).
+python3 -I -B "$APP/../tooling/ohos/hap-version.py" --pubspec pubspec.yaml --app-json "$APP_JSON"
 # Signing happens outside hvigor, so neither its project model nor cache gets credentials.
 if ! python3 -I - ohos/build-profile.json5 <<'PY_UNSIGNED'
 import pathlib, re, sys

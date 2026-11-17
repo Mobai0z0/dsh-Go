@@ -45,9 +45,9 @@ env:
   # The Android repository this one follows. Override with a repository
   # variable when the fork follows a different one.
   UPSTREAM_REPO: ${{ vars.OHOS_UPSTREAM_REPO || 'ccch1mneyyy/dsh-go' }}
-  # Every build job checks out `vars.OHOS_REF` (default `claude/harmonyos-ohos`),
-  # the branch that carries app/ohos and tooling/ohos. Once those files land on
-  # main, set the variable to `main`; nothing else changes.
+  # Every build job checks out `vars.OHOS_REF` (default `main`, where app/ohos
+  # and tooling/ohos now live). Building the old `claude/harmonyos-ohos` branch
+  # shipped its frozen pubspec, so every release reported the same version.
   FLUTTER_OHOS_TAG: 3.47.9-ohos-1.0.0
   FLUTTER_OHOS_COMMIT: e5f752df3e25ec897da3c98a74bcced7c21b0bd3
   TZ: Asia/Shanghai
@@ -180,7 +180,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ vars.OHOS_REF || 'claude/harmonyos-ohos' }}
+          ref: ${{ vars.OHOS_REF || 'main' }}
           persist-credentials: false
 
       # oh-flutter comes from atomgit, its tools from Huawei's OBS and the OHOS
@@ -316,12 +316,15 @@ jobs:
     continue-on-error: true
     env:
       NODE_VERSION: 24.22.1
+      # The version the HAP reports: the release it is published as, so the name
+      # on the asset and the name on the phone can't drift apart.
+      VERSION: ${{ needs.detect.outputs.version }}
       SDK_URL: ${{ vars.OHOS_SDK_URL || 'https://repo.huaweicloud.com/openharmony/os/7.0-Release/ohos-sdk-windows_linux-public.tar.gz' }}
       SDK_SHA256: ${{ vars.OHOS_SDK_SHA256 || '130a438cbcddd46a2a5b09ee9925339cddf4cca99223329b860f96a5c72f338f' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ vars.OHOS_REF || 'claude/harmonyos-ohos' }}
+          ref: ${{ vars.OHOS_REF || 'main' }}
           persist-credentials: false
 
       # One release holds the libraries CI cannot build. Without it there is
@@ -504,6 +507,7 @@ jobs:
           # blamed for the SyscapTransform failure earlier, but that was the
           # aarch64 tools; with x86_64 ones it works.
           if ! tooling/ohos/check-arkts.sh --sdk "$SDK_ROOT" --full --hms-stubs --work "$PWD/work" \
+              --version "$VERSION" \
               --aot "$PWD/aot" \
               --native "$NATIVE_DIR" \
               --runtime "$PWD/natives/dsh-runtime.zip" \

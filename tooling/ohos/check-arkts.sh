@@ -11,6 +11,7 @@
 #   --with-forks  also compile the plugin forks of pubspec_overrides.ohos.yaml
 #   --hms-stubs   NONOFFICIAL minimal declarations; HMS remains uncompiled
 #   --distribution debug|device|store  permissions for that build (hap-distribution.py); store is what's in the repo
+#   --version X.Y.Z  versionName in the HAP (default: app/pubspec.yaml's); versionCode is derived from it
 #   --werror      warnings in the project's own files also fail the check
 #   --clean       delete --work first, downloads included
 #
@@ -36,7 +37,8 @@
 # It works on a temporary copy, never on the source. What the copy changes:
 # - runtimeOS OpenHarmony: the HarmonyOS SDK is behind a login (app/ohos/README.md says
 #   what that costs); this needs compileSdkVersion, modelVersion 6.0.0 and deviceTypes
-#   "default" too
+#   "default" too — the packaged module.json gets "phone" back, since "default" is
+#   not a device a store publishes to and a phone is what this app is
 # - no externalNativeOptions unless --full: the native libs have their own build, so
 #   `libdsh_host.so` is checked against its .d.ts and the HAP doesn't run
 # - no flutter-hvigor-plugin and no Dart: oh_modules is laid out by hand (ohpm isn't
@@ -67,6 +69,7 @@ HMS_STUBS=0
 WERROR=0
 CLEAN=0
 DISTRIBUTION=""
+VERSION=""
 FULL=0
 AOT=""
 NATIVE=""
@@ -83,6 +86,7 @@ while [ $# -gt 0 ]; do
     --werror) WERROR=1; shift ;;
     --clean) CLEAN=1; shift ;;
     --distribution) DISTRIBUTION="${2:?--distribution needs debug, device or store}"; shift 2 ;;
+    --version) VERSION="${2:?--version needs a version name}"; shift 2 ;;
     --full) FULL=1; shift ;;
     --aot) AOT="${2:?--aot needs a directory}"; shift 2 ;;
     --native) NATIVE="${2:?--native needs a directory}"; shift 2 ;;
@@ -391,17 +395,14 @@ with zipfile.ZipFile(transport) as bundle:
         sys.exit("check-arkts: runtime input must contain one unencrypted Stored dsh-runtime/runtime.zip")
     bundle.extract(entries[0], rawfile)
 PY_RUNTIME_ARCHIVE
-  # The plugin takes the version from pubspec.yaml through local.properties.
-  python3 -I - "$REPO/app/pubspec.yaml" "$PROJECT/AppScope/app.json5" <<'PY'
-import re, sys
-name, code = re.search(r"^version: *([^+\s]+)\+(\d+)", open(sys.argv[1]).read(), re.M).groups()
-text = open(sys.argv[2]).read()
-text, a = re.subn(r'"versionCode": *\d+', f'"versionCode": {code}', text)
-text, b = re.subn(r'"versionName": *"[^"]*"', f'"versionName": "{name}"', text)
-if a != 1 or b != 1:
-    sys.exit("check-arkts: app.json5 no longer has one versionCode and one versionName")
-open(sys.argv[2], "w").write(text)
-PY
+  # What the phone shows and the store compares: --version, else pubspec.yaml's
+  # `1.1.0`. versionCode is derived from it, never pubspec's `+N` placeholder:
+  # that placeholder stays at 1, and a system only takes a HAP whose versionCode
+  # is higher than the installed one.
+  VERSION_ARGS=()
+  [ -z "$VERSION" ] || VERSION_ARGS=(--name "$VERSION")
+  python3 -I -B "$REPO/tooling/ohos/hap-version.py" --pubspec "$REPO/app/pubspec.yaml" \
+    --app-json "$PROJECT/AppScope/app.json5" ${VERSION_ARGS[@]+"${VERSION_ARGS[@]}"}
 fi
 
 # Capture the exact copied code, including native declarations. The only ETS
@@ -435,6 +436,32 @@ rc=0
   --no-daemon --no-parallel --no-incremental) > "$LOG" 2>&1 || rc=$?
 
 HAP="$PROJECT/entry/build/default/outputs/default/entry-default-unsigned.hap"
+# The OpenHarmony toolchain only accepts deviceTypes "default" (header above),
+# and "default" is not a device a store publishes to. The compiled module.json is
+# plain JSON, so the artifact gets "phone" back — the device this app is for.
+# audit-hap.py fails the run if it is missing again.
+if [ "$rc" = 0 ] && [ -f "$HAP" ]; then
+  python3 -I - "$HAP" <<'PY_DEVICE_TYPES'
+import json, os, shutil, sys, tempfile, zipfile
+hap = sys.argv[1]
+with zipfile.ZipFile(hap) as archive:
+    module = json.loads(archive.read("module.json"))
+types = module["module"]["deviceTypes"]
+if "phone" not in types:
+    if "default" not in types:
+        sys.exit(f'check-arkts: module.json declares {types}, neither "default" nor "phone"')
+    module["module"]["deviceTypes"] = ["phone" if value == "default" else value for value in types]
+    with tempfile.TemporaryDirectory() as temporary:
+        patched = os.path.join(temporary, "patched.hap")
+        with zipfile.ZipFile(hap) as source, zipfile.ZipFile(patched, "w") as target:
+            for item in source.infolist():
+                data = source.read(item.filename)
+                if item.filename == "module.json":
+                    data = json.dumps(module, ensure_ascii=False, separators=(",", ":")).encode()
+                target.writestr(item, data)
+        shutil.move(patched, hap)
+PY_DEVICE_TYPES
+fi
 ABC_TEXT="$PROJECT/modules.abc.txt"
 ABC_ROOT="$PROJECT/bytecode"
 rm -f "$ABC_TEXT"
