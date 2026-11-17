@@ -1,0 +1,2 @@
+native-assets: the AOT needs libsqlite3.so: build it with runtime/ohos/native/build-sqlite.py into /home/runner/work/dsh-Go-ohos/dsh-Go-ohos/natives/libs; the AOT's own copy is the hook's glibc binary and never goes into a HAP
+check-arkts: --native lacks an OH build of the AOT's native assets (see above)
