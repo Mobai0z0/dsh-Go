@@ -61,9 +61,12 @@
 | JDK 17 / Node 24.22.1 | `setup-java` / `setup-node` |
 | `libapp.so` + `flutter_assets` | 上一个 job（macOS 编译）的产物 |
 | Node 头文件 | 自动下载 `node-v24.22.1.tar.gz` |
+| `libsqlite3.so` | 自动构建：SQLite amalgamation 从 sqlite.org 取（按 `build-sqlite.py` 钉住的 sha256），`sqlite3` 包源码从 pub.dev 取（版本必须等于 `app/pubspec.lock`），用 SDK 自带的 clang 编成 OH 版本 |
 | **`libnode.so`、`libdsh_flock.so`、`libdsh_require_builtin.so`、`dsh-runtime.zip`** | **要你上传一次**，见下 |
 
 原生库不能自动生成：`runtime/ohos/native/build-hap-libs.py` 需要先自建 clang（`build-runtimes.py`）再交叉编译整个 Node 24（`build-node.py`），耗时以小时计，放进每次发版不现实。所以它放在本仓库一个固定的 `ohos-toolchain` release 里，CI 每次直接取。
+
+`libsqlite3.so` 不走这个 release：AOT 带的是 `sqlite3` 包钩子下的 glibc 版本，鸿蒙是 musl 装不上，所以发版时必须有一份 OH 构建。它只需要 SDK 的 clang，`hap` job 每次自己编（`runtime/ohos/native/build-sqlite.py`）。**`hap-libs.zip` 里不用放它**，放了也会被这一份覆盖（同名，`check-arkts.sh` 拷的是 `--native` 那份）。
 
 ## 版本与设备类型
 
@@ -116,6 +119,7 @@ gh release create ohos-toolchain --repo <owner>/<repo> \
 | `OHOS_UPSTREAM_REPO` | `ccch1mneyyy/dsh-go` | 跟随的上游仓库 |
 | `OHOS_SDK_URL` | 华为云 7.0-Release 的 SDK 包 | 换 SDK 来源时用 |
 | `OHOS_SDK_SHA256` | 上面那个包的 sha256 | 换 SDK 来源时必须一起改 |
+| `OHOS_SQLITE_URL` | `https://www.sqlite.org/2026` | SQLite amalgamation 的目录（只换目录，文件名由 `build-sqlite.py` 钉住）；sqlite.org 连不上时指到镜像 |
 
 不需要任何 secret。
 

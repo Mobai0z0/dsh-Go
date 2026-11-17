@@ -319,6 +319,8 @@ jobs:
       # The version the HAP reports: the release it is published as, so the name
       # on the asset and the name on the phone can't drift apart.
       VERSION: ${{ needs.detect.outputs.version }}
+      # Where the pinned SQLite amalgamation lives; a mirror can be set as a variable.
+      SQLITE_AMALGAMATION_BASE: ${{ vars.OHOS_SQLITE_URL || 'https://www.sqlite.org/2026' }}
       SDK_URL: ${{ vars.OHOS_SDK_URL || 'https://repo.huaweicloud.com/openharmony/os/7.0-Release/ohos-sdk-windows_linux-public.tar.gz' }}
       SDK_SHA256: ${{ vars.OHOS_SDK_SHA256 || '130a438cbcddd46a2a5b09ee9925339cddf4cca99223329b860f96a5c72f338f' }}
     steps:
@@ -479,6 +481,42 @@ jobs:
             "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION.tar.gz"
           tar -xzf node.tar.gz "node-v$NODE_VERSION/src"
           rm -f node.tar.gz
+
+      # The AOT carries the sqlite3 package's native asset, and that copy is the
+      # hook's glibc binary that HarmonyOS cannot load. Its OH build needs only
+      # this SDK's clang, so it is built here instead of being uploaded with the
+      # Node libraries; build-sqlite.py pins both inputs by SHA-256 and refuses
+      # anything else, including a package version app/pubspec.lock does not lock.
+      - name: Build the HAP's libsqlite3.so
+        if: steps.toolchain.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -f aot/native_assets/libs/arm64-v8a/libsqlite3.so ]; then
+            echo "::notice::The AOT carries no libsqlite3.so; nothing to build."
+            exit 0
+          fi
+          # One source of truth: the lock for the package, the script for the file name.
+          read -r version name < <(python3 - <<'PY'
+          import re
+          lock = open('app/pubspec.lock', encoding='utf-8').read()
+          block = re.search(r'^  sqlite3:\n((?:    .*\n)+)', lock, re.M).group(1)
+          version = re.search(r'^    version: "([^"]+)"', block, re.M).group(1)
+          script = open('runtime/ohos/native/build-sqlite.py', encoding='utf-8').read()
+          print(version, re.search(r"^VERSION, VERSION_DIR = '[^']*', '([^']+)'", script, re.M).group(1))
+          PY
+          )
+          test -n "${version:-}" && test -n "${name:-}" || {
+            echo "::error::cannot read the sqlite3 version from app/pubspec.lock and build-sqlite.py"; exit 1; }
+          echo "sqlite3 package $version, amalgamation $name"
+          curl -fSL --retry 3 --retry-delay 10 -o "sqlite3-$version.tar.gz" \
+            "https://pub.dev/api/archives/sqlite3-$version.tar.gz"
+          mkdir -p sqlite3-package
+          tar -xzf "sqlite3-$version.tar.gz" -C sqlite3-package
+          curl -fSL --retry 3 --retry-delay 10 -o "$name.zip" "$SQLITE_AMALGAMATION_BASE/$name.zip"
+          python3 runtime/ohos/native/build-sqlite.py --sdk-native "$SDK_ROOT/native" \
+            --amalgamation "$name.zip" --sqlite3-package sqlite3-package --output natives/sqlite
+          cp natives/sqlite/libsqlite3.so "$NATIVE_DIR/"
+          ls -l "$NATIVE_DIR/libsqlite3.so"
 
       - name: Package the HAP
         if: steps.toolchain.outputs.found == 'true'
